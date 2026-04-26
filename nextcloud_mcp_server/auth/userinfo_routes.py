@@ -65,6 +65,7 @@ async def _get_authenticated_client_for_userinfo(request: Request) -> NextcloudC
             base_url=nextcloud_host,
             username=username,
             auth=BasicAuth(username, password),
+            password=password,
         )
 
     # OAuth mode - get token from session

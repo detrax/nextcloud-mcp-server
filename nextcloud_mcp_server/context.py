@@ -148,6 +148,7 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
         base_url=settings.nextcloud_host,
         username=username,
         auth=BasicAuth(username, password),
+        password=password,
     )
 
 
@@ -196,4 +197,5 @@ async def _get_client_from_login_flow(
         base_url=nextcloud_host,
         username=username,
         auth=BasicAuth(username, app_data["app_password"]),
+        password=app_data["app_password"],
     )

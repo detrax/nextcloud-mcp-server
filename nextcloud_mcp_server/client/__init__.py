@@ -63,7 +63,15 @@ class AsyncDisableCookieTransport(AsyncBaseTransport):
 class NextcloudClient:
     """Main Nextcloud client that orchestrates all app clients."""
 
-    def __init__(self, base_url: str, username: str, auth: Auth | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        auth: Auth | None = None,
+        *,
+        password: str | None = None,
+        token: str | None = None,
+    ):
         self.username = username
         self._client = AsyncClient(
             base_url=base_url,
@@ -77,9 +85,12 @@ class NextcloudClient:
         self.notes = NotesClient(self._client, username)
         self.webdav = WebDAVClient(self._client, username)
         self.tables = TablesClient(self._client, username)
+        # CalendarClient takes raw credentials so caldav (which uses niquests as
+        # its preferred backend in v3.x) builds a backend-compatible auth object
+        # itself — passing httpx.BasicAuth here breaks under niquests (#731).
         self.calendar = CalendarClient(
-            base_url, username, auth
-        )  # Uses AsyncDavClient internally
+            base_url, username, password=password, token=token
+        )
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
         self.collectives = CollectivesClient(self._client, username)
@@ -101,7 +112,12 @@ class NextcloudClient:
         username = os.environ["NEXTCLOUD_USERNAME"]
         password = os.environ["NEXTCLOUD_PASSWORD"]
         # Pass username to constructor
-        return cls(base_url=host, username=username, auth=BasicAuth(username, password))
+        return cls(
+            base_url=host,
+            username=username,
+            auth=BasicAuth(username, password),
+            password=password,
+        )
 
     @classmethod
     def from_token(cls, base_url: str, token: str, username: str):
@@ -118,7 +134,12 @@ class NextcloudClient:
         from ..auth import BearerAuth  # noqa: PLC0415
 
         logger.info(f"Creating NC Client for user '{username}' using OAuth token")
-        return cls(base_url=base_url, username=username, auth=BearerAuth(token))
+        return cls(
+            base_url=base_url,
+            username=username,
+            auth=BearerAuth(token),
+            token=token,
+        )
 
     async def capabilities(self):
         response = await self._client.get(
