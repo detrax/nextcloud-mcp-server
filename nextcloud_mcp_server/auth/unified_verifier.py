@@ -17,6 +17,7 @@ Key Design Principles:
 
 import hashlib
 import logging
+import os
 import time
 from typing import Any
 
@@ -97,6 +98,25 @@ class UnifiedTokenVerifier(TokenVerifier):
         self._token_cache: dict[str, tuple[dict[str, Any], float]] = {}
         self.cache_ttl = 3600  # 1 hour default
 
+        # NOTE: ALLOWED_MCP_CLIENTS and ALLOWED_MGMT_CLIENT are currently separate
+        # env vars to keep the MCP-route and management-API auth surfaces
+        # independent. These may be consolidated into a single env var later
+        # once the deployment story stabilises.
+        self._allowed_mgmt_clients: frozenset[str] = frozenset(
+            entry.strip()
+            for entry in os.getenv("ALLOWED_MGMT_CLIENT", "").split(",")
+            if entry.strip()
+        )
+        if not self._allowed_mgmt_clients:
+            logger.warning(
+                "ALLOWED_MGMT_CLIENT is unset or empty: management API will reject "
+                "all requests until configured."
+            )
+        else:
+            logger.info(
+                f"Management API allowlist: {sorted(self._allowed_mgmt_clients)}"
+            )
+
         logger.info(
             f"UnifiedTokenVerifier initialized in {self.mode} mode. "
             f"MCP audience: {settings.oidc_client_id} or {settings.nextcloud_mcp_server_url}, "
@@ -169,10 +189,11 @@ class UnifiedTokenVerifier(TokenVerifier):
             token: Bearer token to verify
 
         Returns:
-            AccessToken if valid (regardless of audience), None otherwise
+            AccessToken if valid AND issued by an allowlisted client, None otherwise
         """
         # Check cache first (using separate cache key to avoid mixing with MCP tokens)
         cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
+        access_token: AccessToken | None = None
         if cache_key in self._token_cache:
             userinfo, expiry = self._token_cache[cache_key]
             if time.time() < expiry:
@@ -181,7 +202,7 @@ class UnifiedTokenVerifier(TokenVerifier):
                 username = userinfo.get("sub") or userinfo.get("preferred_username")
                 scope_string = userinfo.get("scope", "")
                 scopes = scope_string.split() if scope_string else []
-                return AccessToken(
+                access_token = AccessToken(
                     token=token,
                     client_id=userinfo.get("client_id", ""),
                     scopes=scopes,
@@ -191,10 +212,23 @@ class UnifiedTokenVerifier(TokenVerifier):
             else:
                 del self._token_cache[cache_key]
 
-        oauth_token_cache_hits_total.labels(hit="false").inc()
+        if access_token is None:
+            oauth_token_cache_hits_total.labels(hit="false").inc()
+            access_token = await self._verify_without_audience_check(token, cache_key)
 
-        # Verify token without audience check
-        return await self._verify_without_audience_check(token, cache_key)
+        if access_token is None:
+            return None
+
+        # Enforce ALLOWED_MGMT_CLIENT allowlist (fail-closed when unset)
+        token_client_id = access_token.client_id
+        if not token_client_id or token_client_id not in self._allowed_mgmt_clients:
+            logger.warning(
+                "Management API token rejected: client_id %r not in ALLOWED_MGMT_CLIENT",
+                token_client_id,
+            )
+            return None
+
+        return access_token
 
     async def _verify_mcp_audience(self, token: str) -> AccessToken | None:
         """

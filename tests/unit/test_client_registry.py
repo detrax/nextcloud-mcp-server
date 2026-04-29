@@ -88,20 +88,23 @@ def test_http_non_localhost_rejected(monkeypatch, caplog):
     assert "evil.com" in caplog.text
 
 
-def test_empty_string_uses_well_known(monkeypatch):
-    registry = _get_registry(monkeypatch, "")
-    clients = registry.list_clients()
-    client_ids = {c.client_id for c in clients}
-    assert "claude-desktop" in client_ids
-    assert "test-mcp-client" in client_ids
+def test_empty_string_yields_empty_registry(monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING):
+        registry = _get_registry(monkeypatch, "")
+    assert registry.list_clients() == []
+    valid, err = registry.validate_client("claude-desktop")
+    assert valid is False
+    assert "Unknown client_id" in err
+    assert "ALLOWED_MCP_CLIENTS is unset or empty" in caplog.text
 
 
-def test_unset_env_uses_well_known(monkeypatch):
-    registry = _get_registry(monkeypatch, None)
-    clients = registry.list_clients()
-    client_ids = {c.client_id for c in clients}
-    assert "claude-desktop" in client_ids
-    assert "test-mcp-client" in client_ids
+def test_unset_env_yields_empty_registry(monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING):
+        registry = _get_registry(monkeypatch, None)
+    assert registry.list_clients() == []
+    valid, err = registry.validate_client("test-mcp-client")
+    assert valid is False
+    assert "Unknown client_id" in err
 
 
 def test_malformed_entries_skipped_with_warning(monkeypatch, caplog):
@@ -151,14 +154,6 @@ def test_validate_redirect_uri_localhost_wildcard(monkeypatch):
     )
     assert valid is True
     assert err is None
-
-
-def test_well_known_clients_wildcard_scopes(monkeypatch):
-    registry = _get_registry(monkeypatch, None)
-    for client in registry.list_clients():
-        assert client.allowed_scopes == ["*"], (
-            f"Well-known client {client.client_id} should have wildcard scopes"
-        )
 
 
 def test_client_name_resolution(monkeypatch):
