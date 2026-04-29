@@ -8,6 +8,7 @@ from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
     CardCommentOperationResponse,
+    CardCommentResponse,
     CardOperationResponse,
     CreateBoardResponse,
     CreateCardResponse,
@@ -15,7 +16,6 @@ from nextcloud_mcp_server.models.deck import (
     CreateStackResponse,
     DeckBoard,
     DeckCard,
-    DeckComment,
     DeckLabel,
     DeckStack,
     LabelOperationResponse,
@@ -728,6 +728,15 @@ def configure_deck_tools(mcp: FastMCP):
 
     # Card Comment Tools
 
+    _COMMENT_MAX_LENGTH = 1000
+
+    def _validate_comment_message(message: str) -> None:
+        if len(message) > _COMMENT_MAX_LENGTH:
+            raise ValueError(
+                f"Comment message too long: {len(message)} characters "
+                f"(max {_COMMENT_MAX_LENGTH})"
+            )
+
     @mcp.tool(
         title="List Deck Card Comments",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -746,7 +755,7 @@ def configure_deck_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
-        return ListCardCommentsResponse(results=comments, total=len(comments))
+        return ListCardCommentsResponse(results=comments, count=len(comments))
 
     @mcp.tool(
         title="Create Deck Card Comment",
@@ -758,8 +767,8 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         card_id: int,
         message: str,
-        parent_id: Optional[int] = None,
-    ) -> DeckComment:
+        parent_id: int | None = None,
+    ) -> CardCommentResponse:
         """Create a comment on a Nextcloud Deck card
 
         Supports @-mentions (e.g. "@alice"). Pass parent_id to reply to an
@@ -770,8 +779,12 @@ def configure_deck_tools(mcp: FastMCP):
             message: The comment text (max 1000 characters)
             parent_id: Optional ID of a parent comment to reply to
         """
+        _validate_comment_message(message)
         client = await get_client(ctx)
-        return await client.deck.create_comment(card_id, message, parent_id=parent_id)
+        comment = await client.deck.create_comment(
+            card_id, message, parent_id=parent_id
+        )
+        return CardCommentResponse(comment=comment)
 
     @mcp.tool(
         title="Update Deck Card Comment",
@@ -781,7 +794,7 @@ def configure_deck_tools(mcp: FastMCP):
     @instrument_tool
     async def deck_update_card_comment(
         ctx: Context, card_id: int, comment_id: int, message: str
-    ) -> DeckComment:
+    ) -> CardCommentResponse:
         """Update a Nextcloud Deck card comment
 
         Only the comment's author can update it; the server returns 403 otherwise.
@@ -791,8 +804,10 @@ def configure_deck_tools(mcp: FastMCP):
             comment_id: The ID of the comment to update
             message: The new comment text (max 1000 characters)
         """
+        _validate_comment_message(message)
         client = await get_client(ctx)
-        return await client.deck.update_comment(card_id, comment_id, message)
+        comment = await client.deck.update_comment(card_id, comment_id, message)
+        return CardCommentResponse(comment=comment)
 
     @mcp.tool(
         title="Delete Deck Card Comment",

@@ -243,7 +243,9 @@ async def test_deck_card_comment_crud_workflow_mcp(
     assert create_result.isError is False, (
         f"Comment creation failed: {create_result.content}"
     )
-    comment = json.loads(create_result.content[0].text)
+    create_response = json.loads(create_result.content[0].text)
+    assert create_response["success"] is True
+    comment = create_response["comment"]
     comment_id = comment["id"]
     assert comment["objectId"] == card_id
     assert comment["message"] == "Initial comment"
@@ -256,7 +258,7 @@ async def test_deck_card_comment_crud_workflow_mcp(
     )
     assert list_result.isError is False, f"List comments failed: {list_result.content}"
     listed = json.loads(list_result.content[0].text)
-    assert listed["total"] >= 1
+    assert listed["count"] >= 1
     listed_ids = [c["id"] for c in listed["results"]]
     assert comment_id in listed_ids, "Created comment not in list"
 
@@ -277,7 +279,8 @@ async def test_deck_card_comment_crud_workflow_mcp(
     assert update_result.isError is False, (
         f"Comment update failed: {update_result.content}"
     )
-    updated = json.loads(update_result.content[0].text)
+    update_response = json.loads(update_result.content[0].text)
+    updated = update_response["comment"]
     assert updated["id"] == comment_id
     assert updated["message"] == "Edited comment"
 
@@ -316,7 +319,7 @@ async def test_deck_card_comment_reply_mcp(
         {"card_id": card_id, "message": "Parent message"},
     )
     assert parent_result.isError is False
-    parent = json.loads(parent_result.content[0].text)
+    parent = json.loads(parent_result.content[0].text)["comment"]
     parent_id = parent["id"]
 
     # Create a reply
@@ -329,9 +332,24 @@ async def test_deck_card_comment_reply_mcp(
         },
     )
     assert reply_result.isError is False, f"Reply failed: {reply_result.content}"
-    reply = json.loads(reply_result.content[0].text)
+    reply = json.loads(reply_result.content[0].text)["comment"]
 
     assert reply["message"] == "Reply message"
     assert reply["replyTo"] is not None, "replyTo should be populated for replies"
     assert reply["replyTo"]["id"] == parent_id
     assert reply["replyTo"]["message"] == "Parent message"
+
+
+async def test_deck_card_comment_message_too_long_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """Creating a comment longer than 1000 chars is rejected client-side."""
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    too_long = "x" * 1001
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": too_long},
+    )
+    assert result.isError is True, "Expected validation error for >1000 char message"

@@ -288,12 +288,23 @@ class LabelOperationResponse(StatusResponse):
 class ListCardCommentsResponse(BaseResponse):
     """Response model for listing card comments."""
 
-    results: list[DeckComment] = Field(description="List of card comments")
-    total: int = Field(description="Number of comments returned")
+    results: list[DeckComment] = Field(description="Card comments in this page")
+    count: int = Field(
+        description=(
+            "Number of comments returned in this page (page size, not the "
+            "server-side total — the Deck list endpoint does not expose a total)."
+        )
+    )
+
+
+class CardCommentResponse(BaseResponse):
+    """Response model returned when a single card comment is created or updated."""
+
+    comment: DeckComment = Field(description="The created or updated card comment")
 
 
 class CardCommentOperationResponse(StatusResponse):
-    """Response model for card comment create/update/delete operations."""
+    """Response model for card comment operations that don't return comment data (e.g. delete)."""
 
     card_id: int = Field(description="ID of the card the comment belongs to")
     comment_id: int = Field(description="ID of the affected comment")
