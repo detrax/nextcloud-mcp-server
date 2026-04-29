@@ -138,7 +138,7 @@ Contributions are welcome!
 
 [![MseeP.ai Security Assessment](https://mseep.net/pr/cbcoutinho-nextcloud-mcp-server-badge.png)](https://mseep.ai/app/cbcoutinho-nextcloud-mcp-server)
 
-Found a security issue? Please report it privately to the maintainers.
+Found a security issue? **Do not open a public GitHub issue.** Use GitHub's [private vulnerability reporting](https://github.com/cbcoutinho/nextcloud-mcp-server/security/advisories/new), or email **security@astrolabecloud.com** if you can't use GitHub. See [SECURITY.md](./SECURITY.md) for details.
 
 ## License
 
