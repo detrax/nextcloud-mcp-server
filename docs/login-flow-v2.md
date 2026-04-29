@@ -242,6 +242,8 @@ The user revoked it from **Settings → Security → Devices & Sessions**. Delet
 
 The provisioning session store is in-memory; `ENABLE_LOGIN_FLOW=true` assumes a single worker. Running with `uvicorn --workers N` will cause provisioning sessions to randomly fail. For higher concurrency, scale horizontally (multiple containers behind a sticky-session load balancer) rather than within a single process.
 
+> **Sticky-session keying:** route on the user's OAuth bearer token (or a session cookie tied to the user) — **not** on source IP. MCP clients may not maintain stable IPs between the request that initiates provisioning and the polling request that completes it, so IP-based affinity will silently break the flow. A stable per-user identifier from the `Authorization` header is the right key.
+
 ## See Also
 
 - [ADR-022: Deployment Mode Consolidation](ADR-022-deployment-mode-consolidation.md) — design rationale

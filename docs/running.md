@@ -17,14 +17,16 @@ Before running the server:
 Start the server using Docker:
 
 ```bash
-# OAuth mode (recommended)
+# Login Flow v2 / OAuth issuer mode (--oauth, recommended for multi-user)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# BasicAuth mode
+# BasicAuth mode (single-user or multi-user pass-through)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
+
+> **Note:** The `--oauth` flag turns on the OAuth-issuer layer used by [Login Flow v2](login-flow-v2.md), the recommended multi-user mode. It does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords (Login Flow v2) or Basic Auth credentials.
 
 The server will start on `http://127.0.0.1:8000` by default.
 
@@ -34,30 +36,26 @@ The server will start on `http://127.0.0.1:8000` by default.
 
 ### Basic Docker Run
 
-#### OAuth Mode (Recommended)
+#### Login Flow v2 / OAuth issuer mode (`--oauth`)
+
+Recommended for multi-user deployments. The MCP server acts as the OAuth issuer for MCP clients; per-user Nextcloud access is obtained via [Login Flow v2](login-flow-v2.md) and stored as encrypted app passwords.
 
 ```bash
-# OAuth with auto-registration
+# OAuth issuer with DCR (Dynamic Client Registration)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# OAuth with custom port
+# OAuth issuer on a custom port
 docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# OAuth with pre-configured client
-docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
-  -e NEXTCLOUD_OIDC_CLIENT_ID=abc123 \
-  -e NEXTCLOUD_OIDC_CLIENT_SECRET=xyz789 \
-  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
-
-# OAuth with specific apps only
+# OAuth issuer with specific apps only
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
   --enable-app notes --enable-app calendar
 ```
 
-#### BasicAuth Mode (Legacy)
+#### BasicAuth Mode
 
 ```bash
 # BasicAuth (requires NEXTCLOUD_USERNAME/PASSWORD in .env)

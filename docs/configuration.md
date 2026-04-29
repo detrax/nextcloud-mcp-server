@@ -24,7 +24,8 @@ cp env.sample .env                     # Full reference with all options
 Then choose your deployment mode:
 
 - [Single-User BasicAuth](#single-user-basicauth-mode) - Simplest for personal instances
-- [Multi-User OAuth](#multi-user-oauth-modes) - Recommended for production
+- [Multi-User BasicAuth](#multi-user-basicauth-mode) - Internal deployments with credential pass-through
+- [Login Flow v2](#login-flow-v2-mode) - Recommended for hosted / OAuth-based MCP clients
 - [Deployment Mode Selection](#deployment-mode-selection) - Explicit mode declaration
 
 ---
@@ -627,27 +628,33 @@ uv run nextcloud-mcp-server --no-oauth \
 
 ### For Development
 
-- Use BasicAuth for quick setup and testing
-- Or use OAuth with auto-registration (dynamic client registration)
+- Use Single-User BasicAuth for the fastest local setup (one user, one app password)
 - Store `.env` file in your project directory
 - Add `.env` to `.gitignore`
 
 ### For Production
 
-- **Always use OAuth2/OIDC** with pre-configured clients
-- Store OAuth client credentials securely
+Pick the mode that matches your deployment topology — there is no single "always" answer:
+
+- **Multi-user / hosted** — use [Login Flow v2](login-flow-v2.md). MCP clients authenticate via OAuth 2.1 + DCR (no pre-configured client to manage); per-user Nextcloud access is stored as encrypted app passwords.
+- **Internal multi-user** — Multi-User BasicAuth pass-through (clients send `Authorization: Basic` headers) is fully supported when users manage their own Nextcloud credentials.
+- **Personal / self-hosted** — Single-User BasicAuth with a Nextcloud app password is the simplest production setup.
+
+In all modes:
+
 - Use environment variables from your deployment platform (Docker secrets, Kubernetes ConfigMaps, etc.)
 - Never commit credentials to version control
 - SQLite database permissions are handled automatically by the server
 
 ### For Docker
 
-- Mount OAuth client storage as a volume for persistence:
+- Under Login Flow v2, mount the encrypted app-password store as a volume so per-user provisioning survives container restarts:
   ```bash
-  docker run -v $(pwd)/.oauth:/app/.oauth --env-file .env \
-    ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
+  docker run -v $(pwd)/data:/app/data --env-file .env \
+    ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
   ```
-- Use Docker secrets for sensitive values in production
+  (`TOKEN_STORAGE_DB=/app/data/tokens.db` in `.env`.)
+- Use Docker secrets for sensitive values in production (`TOKEN_ENCRYPTION_KEY`, `NEXTCLOUD_PASSWORD`, etc.)
 
 ---
 

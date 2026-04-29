@@ -126,6 +126,8 @@ Astrolabe                     MCP Server                   Nextcloud OIDC
 - Tokens are validated by the MCP server using Nextcloud OIDC JWKS
 - Authorization check: `token.sub == requested_resource_owner`
 
+> **Note:** The diagram and JWKS source above apply to **Multi-User BasicAuth**, where Nextcloud is the IdP. Under [Login Flow v2](#3-login-flow-v2) the MCP server is its own OAuth issuer and validates Bearer tokens against its **own** JWKS (or via local introspection of opaque tokens) — Nextcloud's JWKS is not involved on the MCP-client → MCP-server leg. See the Login Flow v2 section below.
+
 ---
 
 ### 3. Login Flow v2

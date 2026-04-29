@@ -1,5 +1,8 @@
 # Keycloak Multi-Client Token Validation
 
+> [!WARNING]
+> **Deprecated — historical reference only.** This document describes the direct-OAuth-to-Nextcloud architecture that was retired in favor of Login Flow v2. See [ADR-022](ADR-022-deployment-mode-consolidation.md) and [Login Flow v2](login-flow-v2.md) for the current approach. Retained because [ADR-002](ADR-002-vector-sync-authentication.md) and `CLAUDE.md` still cite this investigation for context.
+
 ## Executive Summary
 
 **Question**: Can Nextcloud's `user_oidc` app (configured with client A) validate bearer tokens from client B in the same Keycloak realm?
