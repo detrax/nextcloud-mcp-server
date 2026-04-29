@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.75.0 (2026-04-29)
+
+### Feat
+
+- **talk**: add MCP integration for Nextcloud Talk (spreed)
+
+### Fix
+
+- **talk**: address remaining PR #741 reviewer feedback
+- **talk**: address PR #741 reviewer feedback
+
 ## v0.74.0 (2026-04-29)
 
 ### Feat
