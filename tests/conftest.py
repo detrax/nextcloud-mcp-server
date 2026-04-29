@@ -38,7 +38,8 @@ DEFAULT_FULL_SCOPES = (
     "deck.read deck.write "
     "tables.read tables.write "
     "files.read files.write "
-    "sharing.read sharing.write"
+    "sharing.read sharing.write "
+    "talk.read talk.write"
 )
 
 # Read-only scopes (all read scopes across apps) - should match DEFAULT_FULL_SCOPES read portion
@@ -52,7 +53,8 @@ DEFAULT_READ_SCOPES = (
     "deck.read "
     "tables.read "
     "files.read "
-    "sharing.read"
+    "sharing.read "
+    "talk.read"
 )
 
 # Write-only scopes (all write scopes across apps) - should match DEFAULT_FULL_SCOPES write portion
@@ -66,7 +68,8 @@ DEFAULT_WRITE_SCOPES = (
     "deck.write "
     "tables.write "
     "files.write "
-    "sharing.write"
+    "sharing.write "
+    "talk.write"
 )
 
 
@@ -914,6 +917,43 @@ async def temporary_board_with_card(
                     )
             except Exception as e:
                 logger.error(f"Unexpected error deleting temporary card {card.id}: {e}")
+
+
+@pytest.fixture
+async def temporary_conversation(nc_client: NextcloudClient):
+    """Create a temporary Talk conversation and clean it up after the test.
+
+    Yields a dict with the room ``token``, ``id``, and ``name``.
+    """
+    unique_suffix = uuid.uuid4().hex[:8]
+    room_name = f"MCP Test Room {unique_suffix}"
+    token = None
+
+    logger.info(f"Creating temporary Talk conversation: {room_name}")
+    try:
+        room = await nc_client.talk.create_conversation(room_name=room_name)
+        token = room.token
+        logger.info(f"Temporary Talk conversation created (token={token})")
+        yield {"token": token, "id": room.id, "name": room_name}
+
+    finally:
+        if token:
+            logger.info(f"Cleaning up temporary Talk conversation token={token}")
+            try:
+                await nc_client.talk.delete_conversation(token)
+                logger.info(f"Successfully deleted Talk conversation token={token}")
+            except HTTPStatusError as e:
+                if e.response.status_code not in [404, 403]:
+                    logger.error(f"HTTP error deleting Talk conversation {token}: {e}")
+                else:
+                    logger.warning(
+                        f"Talk conversation {token} already deleted or access denied "
+                        f"({e.response.status_code})."
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error deleting Talk conversation {token}: {e}"
+                )
 
 
 @pytest.fixture(scope="session")

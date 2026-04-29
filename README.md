@@ -90,6 +90,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 | **Sharing** | 10+ | Create and manage shares |
 | **News** | 8 | Feeds, folders, items, feed health monitoring |
 | **Collectives** | 16 | Full CRUD on collectives, pages, and tags |
+| **Talk (spreed)** | 6 | List conversations, read/post messages, mark as read, list participants |
 | **Semantic Search** | 2+ | Vector search for Notes, Files, News items, and Deck cards (experimental, opt-in, requires infrastructure) |
 
 Want to see another Nextcloud app supported? [Open an issue](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) or contribute a pull request!

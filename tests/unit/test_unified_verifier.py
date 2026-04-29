@@ -512,3 +512,114 @@ class TestVerifyTokenFlow:
             result = await verifier.verify_token("opaque-token")
             assert result is not None
             assert result.resource == "testuser"
+
+
+class TestManagementApiAllowlist:
+    """Test ALLOWED_MGMT_CLIENT enforcement in verify_token_for_management_api."""
+
+    @staticmethod
+    def _underlying_token(client_id: str = "astrolabe"):
+        from mcp.server.auth.provider import AccessToken
+
+        return AccessToken(
+            token="t",
+            client_id=client_id,
+            scopes=["openid"],
+            expires_at=int(time.time() + 3600),
+            resource="testuser",
+        )
+
+    async def test_unset_allowlist_rejects_all(self, monkeypatch, base_settings):
+        monkeypatch.delenv("ALLOWED_MGMT_CLIENT", raising=False)
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._allowed_mgmt_clients == frozenset()
+
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            return_value=self._underlying_token("astrolabe"),
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is None
+
+    async def test_empty_allowlist_rejects_all(self, monkeypatch, base_settings):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "  , ,")
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._allowed_mgmt_clients == frozenset()
+
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            return_value=self._underlying_token("astrolabe"),
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is None
+
+    async def test_allowlisted_client_accepted(self, monkeypatch, base_settings):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe, admin-tool")
+        verifier = UnifiedTokenVerifier(base_settings)
+        assert verifier._allowed_mgmt_clients == {"astrolabe", "admin-tool"}
+
+        underlying = self._underlying_token("astrolabe")
+        with patch.object(
+            verifier, "_verify_without_audience_check", return_value=underlying
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is underlying
+
+    async def test_non_allowlisted_client_rejected(self, monkeypatch, base_settings):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            return_value=self._underlying_token("some-other-client"),
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is None
+
+    async def test_token_missing_client_id_rejected(self, monkeypatch, base_settings):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        with patch.object(
+            verifier,
+            "_verify_without_audience_check",
+            return_value=self._underlying_token(""),
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is None
+
+    async def test_underlying_verification_failure_propagates(
+        self, monkeypatch, base_settings
+    ):
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        with patch.object(
+            verifier, "_verify_without_audience_check", return_value=None
+        ):
+            result = await verifier.verify_token_for_management_api("any-token")
+            assert result is None
+
+    async def test_cache_hit_also_enforces_allowlist(self, monkeypatch, base_settings):
+        """A previously-cached token must still be re-checked against the allowlist."""
+        import hashlib
+
+        monkeypatch.setenv("ALLOWED_MGMT_CLIENT", "astrolabe")
+        verifier = UnifiedTokenVerifier(base_settings)
+
+        token = "cached-token"
+        cache_key = f"mgmt:{hashlib.sha256(token.encode()).hexdigest()}"
+        verifier._token_cache[cache_key] = (
+            {
+                "sub": "testuser",
+                "scope": "openid",
+                "client_id": "not-allowlisted",
+            },
+            time.time() + 3600,
+        )
+
+        result = await verifier.verify_token_for_management_api(token)
+        assert result is None

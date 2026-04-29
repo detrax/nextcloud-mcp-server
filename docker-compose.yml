@@ -168,6 +168,11 @@ services:
       # - NEXTCLOUD_OIDC_CLIENT_ID=your_client_id
       # - NEXTCLOUD_OIDC_CLIENT_SECRET=your_client_secret
 
+      # Management API allowlist (ADR-018): only Astrolabe-issued tokens may
+      # call /api/management/*. Default test client_id used by the
+      # configure_astrolabe_for_mcp_server fixture.
+      - ALLOWED_MGMT_CLIENT=nextcloudMcpServerUIPublicClient
+
       # NO admin credentials - credentials come from client Authorization header
     volumes:
       - multi-user-basic-data:/app/data

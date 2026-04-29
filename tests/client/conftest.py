@@ -358,6 +358,85 @@ def create_mock_deck_comment_response(
     return create_mock_response(status_code=200, json_data=ocs_response)
 
 
+def create_mock_talk_room_response(
+    conversation_id: int = 1,
+    token: str = "abc123",
+    name: str = "Test Conversation",
+    room_type: int = 2,
+    **kwargs,
+) -> httpx.Response:
+    """Create a mock OCS response for a Nextcloud Talk conversation.
+
+    Args:
+        conversation_id: Numeric conversation ID
+        token: Unique room token
+        name: Conversation name
+        room_type: 1=one-to-one, 2=group, 3=public, 4=changelog
+        **kwargs: Additional conversation fields (override defaults)
+
+    Returns:
+        Mock httpx.Response with conversation data wrapped in OCS format.
+    """
+    room_data = {
+        "id": conversation_id,
+        "token": token,
+        "type": room_type,
+        "name": name,
+        "displayName": name,
+        "description": "",
+        "participantType": 1,
+        "unreadMessages": 0,
+        "unreadMention": False,
+        "lastActivity": 1700000000,
+        "lastReadMessage": 0,
+        "lastMessage": [],
+        "readOnly": 0,
+        "isFavorite": False,
+        "notificationLevel": 0,
+        **kwargs,
+    }
+
+    ocs_response = {"ocs": {"meta": {"status": "ok"}, "data": room_data}}
+    return create_mock_response(status_code=200, json_data=ocs_response)
+
+
+def create_mock_talk_message_response(
+    message_id: int = 1,
+    token: str = "abc123",
+    text: str = "Hello, world!",
+    actor_id: str = "testuser",
+    **kwargs,
+) -> httpx.Response:
+    """Create a mock OCS response for a Nextcloud Talk chat message.
+
+    Args:
+        message_id: Numeric message ID
+        token: Conversation token the message belongs to
+        text: Message body
+        actor_id: User ID of the message author
+        **kwargs: Additional message fields (override defaults)
+
+    Returns:
+        Mock httpx.Response with message data wrapped in OCS format.
+    """
+    message_data = {
+        "id": message_id,
+        "token": token,
+        "actorType": "users",
+        "actorId": actor_id,
+        "actorDisplayName": "Test User",
+        "timestamp": 1700000000,
+        "systemMessage": "",
+        "messageType": "comment",
+        "message": text,
+        "messageParameters": {},
+        **kwargs,
+    }
+
+    ocs_response = {"ocs": {"meta": {"status": "ok"}, "data": message_data}}
+    return create_mock_response(status_code=200, json_data=ocs_response)
+
+
 def create_mock_tables_list_response(
     tables: list[dict] = None,
 ) -> httpx.Response:
