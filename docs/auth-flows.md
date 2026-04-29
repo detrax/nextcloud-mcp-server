@@ -94,8 +94,8 @@ Astrolabe                     MCP Server                   Nextcloud
     │                             │                            │
     │── Store app password ──────▶│                            │
     │   (via management API)      │                            │
-    │                             │── Encrypt + persist ──────▶│
-    │                             │   (SQLite, Fernet)         │
+    │                             │ [Encrypt + persist locally]│
+    │                             │  (SQLite, Fernet)          │
     │◀── Confirmation ────────────│                            │
     │                             │                            │
     │         [Background job]    │                            │

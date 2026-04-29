@@ -4,7 +4,7 @@ This document explains the architecture of the semantic search feature in the Ne
 
 > [!IMPORTANT]
 > **Status: Experimental**
-> - Disabled by default (`VECTOR_SYNC_ENABLED=false`)
+> - Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`)
 > - Currently supports **Notes, Files (PDFs), News items, and Deck cards**
 > - Requires additional infrastructure (Qdrant vector database + Ollama embedding service)
 > - RAG answer generation requires MCP client sampling support

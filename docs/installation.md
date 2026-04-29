@@ -6,7 +6,7 @@ This guide covers installing the Nextcloud MCP server on your system.
 
 - **Python 3.11+** - Check with `python3 --version`
 - **Access to a Nextcloud instance** - Self-hosted or cloud-hosted
-- **Administrator access** (for OAuth setup) - Required to install OIDC app
+- **Administrator access** *(optional)* - Only needed to customise app-password policies in Nextcloud settings; not required for any deployment mode (single-user, multi-user BasicAuth, or Login Flow v2)
 
 ## Installation Methods
 

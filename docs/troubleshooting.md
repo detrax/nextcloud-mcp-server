@@ -423,7 +423,7 @@ curl -u "$NEXTCLOUD_USERNAME:$NEXTCLOUD_PASSWORD" \
 
 For Login Flow v2 mode, see [Login Flow v2 troubleshooting](login-flow-v2.md#troubleshooting).
 
-### 4. Check Versions
+### 3. Check Versions
 
 ```bash
 # MCP Server version
@@ -435,7 +435,7 @@ python3 --version
 # Nextcloud version (check in admin panel)
 ```
 
-### 5. Open an Issue
+### 4. Open an Issue
 
 If problems persist, open an issue on the [GitHub repository](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) with:
 

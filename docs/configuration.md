@@ -11,14 +11,15 @@ We provide mode-specific configuration templates for quick setup:
 ```bash
 # Choose a template based on your deployment mode:
 cp env.sample.single-user .env         # Simplest - one user, local dev
-cp env.sample.oauth-multi-user .env    # Recommended - multi-user OAuth
-cp env.sample.oauth-advanced .env      # Advanced - token exchange mode
+cp env.sample .env                     # Full reference with all options
 
-# Or start from the full example:
-cp env.sample .env
+# For multi-user Login Flow v2 (recommended), see the dedicated guide:
+# docs/login-flow-v2.md#setup
 
 # Edit .env with your Nextcloud details
 ```
+
+> **Note:** The legacy templates `env.sample.oauth-multi-user` and `env.sample.oauth-advanced` configure the deprecated direct-OAuth-to-Nextcloud modes. New deployments should use [Login Flow v2](login-flow-v2.md) for multi-user setups.
 
 Then choose your deployment mode:
 
@@ -210,7 +211,7 @@ QDRANT_URL=http://qdrant:6333
 OLLAMA_BASE_URL=http://ollama:11434
 ```
 
-> **Note:** In multi-user modes (OAuth, Multi-User BasicAuth), enabling `ENABLE_SEMANTIC_SEARCH` automatically enables background operations and refresh token storage. You don't need to set `ENABLE_BACKGROUND_OPERATIONS` separately!
+> **Note:** In multi-user modes (Login Flow v2, Multi-User BasicAuth), enabling `ENABLE_SEMANTIC_SEARCH` automatically enables background operations and refresh token storage. You don't need to set `ENABLE_BACKGROUND_OPERATIONS` separately!
 
 ### Qdrant Vector Database Modes
 
