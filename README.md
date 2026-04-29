@@ -248,7 +248,7 @@ This project takes security seriously:
 - No credential storage in OAuth mode
 - Regular security assessments
 
-Found a security issue? **Do not open a public GitHub issue.** Please report it privately by emailing **security@astrolabecloud.com**. See [SECURITY.md](./SECURITY.md) for details.
+Found a security issue? **Do not open a public GitHub issue.** Use GitHub's [private vulnerability reporting](https://github.com/cbcoutinho/nextcloud-mcp-server/security/advisories/new), or email **security@astrolabecloud.com** if you can't use GitHub. See [SECURITY.md](./SECURITY.md) for details.
 
 ## License
 
