@@ -11,6 +11,7 @@ require ``OCS-APIRequest: true`` and respond as JSON when ``Accept:
 application/json`` is sent.
 """
 
+import logging
 from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
@@ -19,6 +20,8 @@ from nextcloud_mcp_server.models.talk import (
     TalkMessage,
     TalkParticipant,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TalkClient(BaseNextcloudClient):
@@ -124,7 +127,10 @@ class TalkClient(BaseNextcloudClient):
 
         Args:
             token: Conversation token.
-            limit: Max messages to return (spreed caps this at 200).
+            limit: Max messages to return. spreed caps this server-side
+                at 200; values outside ``[1, 200]`` are clamped here so
+                callers don't get a confusing mismatch between the
+                requested limit and the returned ``count``.
             last_known_message_id: Pagination cursor — pass the value
                 from the previous response's ``X-Chat-Last-Given`` header.
             look_into_future: When False (default), return *older*
@@ -140,10 +146,12 @@ class TalkClient(BaseNextcloudClient):
         Returns:
             ``(messages, x_chat_last_given)`` where the integer is the
             value of the ``X-Chat-Last-Given`` response header (or None
-            if the header was absent), suitable for pagination.
+            if the header was absent or unparseable), suitable for
+            pagination.
         """
+        clamped_limit = min(max(1, limit), 200)
         params: dict[str, Any] = {
-            "limit": limit,
+            "limit": clamped_limit,
             "lookIntoFuture": 1 if look_into_future else 0,
             "setReadMarker": 1 if set_read_marker else 0,
             "includeLastKnown": 1 if include_last_known else 0,
@@ -161,7 +169,17 @@ class TalkClient(BaseNextcloudClient):
         # spreed returns 200 with an empty data list when there's nothing
         # new, so we trust the JSON body here.
         last_given_header = response.headers.get("X-Chat-Last-Given")
-        last_given = int(last_given_header) if last_given_header else None
+        last_given: int | None = None
+        if last_given_header:
+            try:
+                last_given = int(last_given_header)
+            except ValueError:
+                # Defensive: spreed always sends an int, but a misbehaving
+                # proxy could mangle the header. Don't crash the read flow.
+                logger.warning(
+                    "Invalid X-Chat-Last-Given header from spreed: %r",
+                    last_given_header,
+                )
         data = response.json()["ocs"]["data"]
         return [TalkMessage(**msg) for msg in data], last_given
 

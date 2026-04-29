@@ -105,7 +105,9 @@ def configure_talk_tools(mcp: FastMCP) -> None:
 
         Args:
             token: Conversation token.
-            limit: Max messages per page (spreed caps at 200).
+            limit: Max messages per page. Valid range is 1-200 (spreed
+                caps server-side at 200); values outside this range are
+                clamped. Default 50.
             last_known_message_id: Pagination cursor — pass the
                 ``last_known_message_id`` from the previous response to
                 fetch the next (older) page.

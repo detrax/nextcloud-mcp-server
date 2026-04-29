@@ -53,7 +53,7 @@ class TalkConversation(BaseModel):
     type: int
     name: str
     displayName: str
-    description: str | None = ""
+    description: str = ""
     participantType: int | None = None
     unreadMessages: int = 0
     unreadMention: bool = False

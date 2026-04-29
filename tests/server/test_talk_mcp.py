@@ -141,3 +141,18 @@ async def test_talk_send_message_validation_empty_text(
         "talk_send_message", {"token": token, "message": ""}
     )
     assert result.isError is True, "Expected validation error for empty message"
+
+
+async def test_talk_send_message_validation_too_long(
+    nc_mcp_client: ClientSession, temporary_conversation: dict
+):
+    """A message exceeding the 32000-char ceiling is rejected client-side."""
+    token = temporary_conversation["token"]
+
+    result = await nc_mcp_client.call_tool(
+        "talk_send_message",
+        {"token": token, "message": "x" * 32001},
+    )
+    assert result.isError is True, (
+        "Expected validation error for message longer than 32000 characters"
+    )
