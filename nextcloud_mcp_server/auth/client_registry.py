@@ -66,7 +66,15 @@ class ClientRegistry:
         - http://localhost:* and http://127.0.0.1:* are allowed (native clients)
         - https:// redirect URIs are allowed (cloud clients)
         - http:// non-localhost redirect URIs are rejected with a warning
+
+        If the env var is unset or empty, the registry remains empty and
+        ``validate_client`` rejects every client_id (fail-closed). There are no
+        built-in defaults; operators must opt-in clients explicitly.
         """
+        # NOTE: ALLOWED_MCP_CLIENTS and ALLOWED_MGMT_CLIENT are currently separate
+        # env vars to keep the MCP-route and management-API auth surfaces
+        # independent. These may be consolidated into a single env var later
+        # once the deployment story stabilises.
         allowed_clients = os.getenv("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
@@ -123,9 +131,11 @@ class ClientRegistry:
                     )
                     logger.info(f"Registered static client: {entry}")
 
-        # Add well-known clients if not explicitly configured
         if not self._clients:
-            self._add_well_known_clients()
+            logger.warning(
+                "Client registry is empty: ALLOWED_MCP_CLIENTS is unset or empty. "
+                "All MCP-flow OAuth requests will be rejected until configured."
+            )
 
     def _get_client_name(self, client_id: str) -> str:
         """Get human-readable name for client_id."""
@@ -135,34 +145,8 @@ class ClientRegistry:
             "continue-dev": "Continue IDE Extension",
             "zed-editor": "Zed Editor",
             "vscode-mcp": "VS Code MCP Extension",
-            "test-mcp-client": "Test MCP Client",
         }
         return known_names.get(client_id, client_id.replace("-", " ").title())
-
-    def _add_well_known_clients(self):
-        """Add well-known MCP clients for testing and development."""
-        well_known = [
-            MCPClientInfo(
-                client_id="claude-desktop",
-                name="Claude Desktop",
-                redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["*"],
-                is_public=True,
-                metadata={"vendor": "Anthropic"},
-            ),
-            MCPClientInfo(
-                client_id="test-mcp-client",
-                name="Test MCP Client",
-                redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
-                allowed_scopes=["*"],
-                is_public=True,
-                metadata={"purpose": "testing"},
-            ),
-        ]
-
-        for client in well_known:
-            self._clients[client.client_id] = client
-            logger.info(f"Registered well-known client: {client.client_id}")
 
     def validate_client(
         self,
