@@ -41,7 +41,6 @@ dependencies = [
     "markdownify>=0.14.1",  # HTML to Markdown conversion for News items
     "pymupdf>=1.26.6",
     "pymupdf4llm>=0.2.2",
-    "pymupdf-layout>=1.26.6",
     "openai>=2.8.1",
     "dynaconf>=3.2.13,<4.0",
 ]
