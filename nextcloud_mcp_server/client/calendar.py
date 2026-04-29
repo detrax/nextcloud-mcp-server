@@ -10,7 +10,6 @@ import anyio
 from caldav.aio import AsyncCalendar, AsyncDAVClient, AsyncEvent
 from caldav.elements import cdav, dav
 from caldav.lib import error as caldav_error
-from httpx import Auth
 from icalendar import Alarm, Calendar, vDDDTypes, vRecur
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
@@ -36,22 +35,46 @@ async def _maybe_await(result: Any) -> Any:
 class CalendarClient:
     """Client for Nextcloud CalDAV calendar and task operations."""
 
-    def __init__(self, base_url: str, username: str, auth: Auth | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        *,
+        password: str | None = None,
+        token: str | None = None,
+    ):
         """Initialize CalendarClient with AsyncDAVClient.
+
+        Pass the raw credential plus an explicit ``auth_type`` so caldav can
+        build whichever auth object its active HTTP backend needs. caldav v3
+        prefers ``niquests`` over ``httpx`` and won't accept an ``httpx.Auth``
+        when ``niquests`` is the active backend (issue #731), so we no longer
+        accept a pre-built ``httpx.Auth`` here.
 
         Args:
             base_url: Nextcloud base URL
             username: Nextcloud username
-            auth: httpx.Auth object (BasicAuth or BearerAuth)
+            password: App password / login password — selects ``auth_type="basic"``
+            token: OAuth bearer token — selects ``auth_type="bearer"``
+
+        Pass exactly one of ``password`` or ``token``. Passing neither leaves
+        the underlying client unauthenticated.
         """
         self.username = username
         self.base_url = base_url
+
+        auth_kwargs: dict[str, Any] = {}
+        if password is not None:
+            auth_kwargs = {"password": password, "auth_type": "basic"}
+        elif token is not None:
+            auth_kwargs = {"password": token, "auth_type": "bearer"}
+
         # AsyncDAVClient needs the full base URL for proper URL construction
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=username,
-            auth=auth,
             ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            **auth_kwargs,
         )
         self._calendar_home_url = f"{base_url}/remote.php/dav/calendars/{username}/"
 

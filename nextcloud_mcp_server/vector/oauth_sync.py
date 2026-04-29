@@ -109,6 +109,7 @@ async def get_user_client_basic_auth(
         base_url=nextcloud_host,
         username=user_id,
         auth=BasicAuth(user_id, app_password),
+        password=app_password,
     )
 
 
