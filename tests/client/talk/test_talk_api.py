@@ -247,6 +247,26 @@ async def test_talk_get_messages_pagination_cursor(mocker):
     assert params["includeLastKnown"] == 1
 
 
+async def test_talk_get_messages_invalid_last_given_header(mocker, caplog):
+    """A non-numeric X-Chat-Last-Given falls back to None and logs a warning."""
+    mock_response = create_mock_response(
+        status_code=200,
+        headers={"X-Chat-Last-Given": "not-a-number"},
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+    mocker.patch.object(TalkClient, "_make_request", return_value=mock_response)
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with caplog.at_level(logging.WARNING, logger="nextcloud_mcp_server.client.talk"):
+        messages, last_given = await client.get_messages("abc")
+
+    assert messages == []
+    assert last_given is None
+    assert any(
+        "Invalid X-Chat-Last-Given" in record.message for record in caplog.records
+    ), "Expected a warning log for the malformed header"
+
+
 async def test_talk_send_message(mocker):
     """send_message posts the message text and parses the response."""
     mock_response = create_mock_talk_message_response(
@@ -384,3 +404,22 @@ async def test_talk_list_participants(mocker):
     call_args = mock_make_request.call_args
     assert call_args[0][0] == "GET"
     assert "/api/v4/room/abc/participants" in call_args[0][1]
+    # Default: include_status off → no includeStatus param
+    assert "includeStatus" not in call_args[1].get("params", {})
+
+
+async def test_talk_list_participants_with_include_status(mocker):
+    """include_status=True forwards includeStatus=true as a query param."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+    mock_make_request = mocker.patch.object(
+        TalkClient, "_make_request", return_value=mock_response
+    )
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    await client.list_participants("abc", include_status=True)
+
+    params = mock_make_request.call_args[1]["params"]
+    assert params["includeStatus"] == "true"

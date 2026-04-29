@@ -33,11 +33,16 @@ class TalkClient(BaseNextcloudClient):
     _CHAT_BASE = "/ocs/v2.php/apps/spreed/api/v1/chat"
 
     def _talk_headers(self) -> dict[str, str]:
-        """Standard OCS+JSON headers for spreed API calls."""
+        """Standard OCS+JSON headers for spreed API calls.
+
+        ``Content-Type`` is intentionally omitted — httpx adds it
+        automatically (and correctly) on requests that pass ``json=``,
+        so setting it here would also leak it onto bodyless GETs and
+        DELETEs.
+        """
         return {
             "OCS-APIRequest": "true",
             "Accept": "application/json",
-            "Content-Type": "application/json",
         }
 
     # Conversations (rooms)
