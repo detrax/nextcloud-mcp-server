@@ -1,0 +1,220 @@
+"""MCP tool registration for the Nextcloud Talk (spreed) integration."""
+
+import logging
+import uuid
+
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
+
+from nextcloud_mcp_server.auth import require_scopes
+from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.models.talk import (
+    GetConversationResponse,
+    ListConversationsResponse,
+    ListMessagesResponse,
+    ListParticipantsResponse,
+    MarkAsReadResponse,
+    SendMessageResponse,
+)
+from nextcloud_mcp_server.observability.metrics import instrument_tool
+
+logger = logging.getLogger(__name__)
+
+
+# spreed advertises a 32000-character limit on chat messages (docs/chat.md);
+# we enforce it client-side for a clearer error than the server's 413.
+_MESSAGE_MAX_LENGTH = 32000
+
+
+def _validate_message_text(message: str) -> None:
+    if not message:
+        raise ValueError("Message text must not be empty")
+    if len(message) > _MESSAGE_MAX_LENGTH:
+        raise ValueError(
+            f"Message too long: {len(message)} characters (max {_MESSAGE_MAX_LENGTH})"
+        )
+
+
+def configure_talk_tools(mcp: FastMCP) -> None:
+    """Configure Nextcloud Talk (spreed) MCP tools."""
+
+    # Read tools
+
+    @mcp.tool(
+        title="List Talk Conversations",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.read")
+    @instrument_tool
+    async def talk_list_conversations(
+        ctx: Context,
+        modified_since: int | None = None,
+        include_status: bool = False,
+    ) -> ListConversationsResponse:
+        """List the user's Talk conversations (rooms).
+
+        Args:
+            modified_since: Optional Unix timestamp; only conversations
+                modified after this time are returned.
+            include_status: Whether to include user-status info for
+                one-to-one conversations.
+        """
+        client = await get_client(ctx)
+        rooms = await client.talk.list_conversations(
+            modified_since=modified_since,
+            include_status=include_status,
+        )
+        return ListConversationsResponse(results=rooms, total=len(rooms))
+
+    @mcp.tool(
+        title="Get Talk Conversation",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.read")
+    @instrument_tool
+    async def talk_get_conversation(
+        ctx: Context, token: str
+    ) -> GetConversationResponse:
+        """Get details of a Talk conversation by its token.
+
+        Args:
+            token: Unique room token (returned by ``talk_list_conversations``).
+        """
+        client = await get_client(ctx)
+        conversation = await client.talk.get_conversation(token)
+        return GetConversationResponse(conversation=conversation)
+
+    @mcp.tool(
+        title="Get Talk Messages",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.read")
+    @instrument_tool
+    async def talk_get_messages(
+        ctx: Context,
+        token: str,
+        limit: int = 50,
+        last_known_message_id: int | None = None,
+        include_last_known: bool = False,
+    ) -> ListMessagesResponse:
+        """Read chat history for a Talk conversation.
+
+        Returns the most recent messages (older first when paginated).
+        Does not move the user's read marker; call
+        ``talk_mark_as_read`` separately if desired.
+
+        Args:
+            token: Conversation token.
+            limit: Max messages per page (spreed caps at 200).
+            last_known_message_id: Pagination cursor — pass the
+                ``last_known_message_id`` from the previous response to
+                fetch the next (older) page.
+            include_last_known: Include the cursor message in the page
+                instead of starting just before it.
+        """
+        client = await get_client(ctx)
+        messages, last_given = await client.talk.get_messages(
+            token,
+            limit=limit,
+            last_known_message_id=last_known_message_id,
+            look_into_future=False,
+            set_read_marker=False,
+            include_last_known=include_last_known,
+        )
+        return ListMessagesResponse(
+            conversation_token=token,
+            results=messages,
+            count=len(messages),
+            last_known_message_id=last_given,
+        )
+
+    @mcp.tool(
+        title="List Talk Conversation Participants",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.read")
+    @instrument_tool
+    async def talk_list_participants(
+        ctx: Context, token: str, include_status: bool = False
+    ) -> ListParticipantsResponse:
+        """List the participants of a Talk conversation.
+
+        Args:
+            token: Conversation token.
+            include_status: Include each participant's user-status info.
+        """
+        client = await get_client(ctx)
+        participants = await client.talk.list_participants(
+            token, include_status=include_status
+        )
+        return ListParticipantsResponse(
+            conversation_token=token,
+            results=participants,
+            count=len(participants),
+        )
+
+    # Write tools
+
+    @mcp.tool(
+        title="Send Talk Message",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("talk.write")
+    @instrument_tool
+    async def talk_send_message(
+        ctx: Context,
+        token: str,
+        message: str,
+        reply_to: int | None = None,
+        silent: bool = False,
+    ) -> SendMessageResponse:
+        """Post a chat message into a Talk conversation as the user.
+
+        A random ``referenceId`` is attached so spreed dedupes the post
+        if the request is retried.
+
+        Args:
+            token: Conversation token.
+            message: Message text (max 32000 characters).
+            reply_to: Optional parent message ID to thread the reply.
+            silent: When True the message is delivered without push
+                notifications (e.g. for status updates).
+        """
+        _validate_message_text(message)
+        client = await get_client(ctx)
+        posted = await client.talk.send_message(
+            token,
+            message,
+            reply_to=reply_to,
+            reference_id=uuid.uuid4().hex,
+            silent=silent,
+        )
+        return SendMessageResponse(message=posted)
+
+    @mcp.tool(
+        title="Mark Talk Conversation as Read",
+        annotations=ToolAnnotations(idempotentHint=True, openWorldHint=True),
+    )
+    @require_scopes("talk.write")
+    @instrument_tool
+    async def talk_mark_as_read(
+        ctx: Context,
+        token: str,
+        last_read_message: int | None = None,
+    ) -> MarkAsReadResponse:
+        """Move the user's read marker forward in a Talk conversation.
+
+        Args:
+            token: Conversation token.
+            last_read_message: Optional message ID to mark as the new
+                read position. When omitted, spreed marks everything
+                currently in the room as read.
+        """
+        client = await get_client(ctx)
+        await client.talk.mark_as_read(token, last_read_message=last_read_message)
+        return MarkAsReadResponse(
+            success=True,
+            message="Conversation marked as read",
+            conversation_token=token,
+            last_read_message=last_read_message,
+        )

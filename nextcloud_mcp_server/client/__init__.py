@@ -23,6 +23,7 @@ from .news import NewsClient
 from .notes import NotesClient
 from .sharing import SharingClient
 from .tables import TablesClient
+from .talk import TalkClient
 from .users import UsersClient
 from .webdav import WebDAVClient
 from .webhooks import WebhooksClient
@@ -85,6 +86,7 @@ class NextcloudClient:
         self.collectives = CollectivesClient(self._client, username)
         self.deck = DeckClient(self._client, username)
         self.news = NewsClient(self._client, username)
+        self.talk = TalkClient(self._client, username)
         self.users = UsersClient(self._client, username)
         self.groups = GroupsClient(self._client, username)
         self.sharing = SharingClient(self._client, username)

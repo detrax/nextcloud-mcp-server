@@ -1,0 +1,238 @@
+"""HTTP client for the Nextcloud Talk (spreed) app.
+
+Talk exposes its REST API under ``/ocs/v2.php/apps/spreed/api/{v}/...``.
+The current versions used here are:
+
+- conversations & participants: ``api/v4`` (Nextcloud 22+)
+- chat:                          ``api/v1`` (Nextcloud 13+)
+
+All endpoints follow the OCS envelope ``{"ocs": {"meta": ..., "data": ...}}``,
+require ``OCS-APIRequest: true`` and respond as JSON when ``Accept:
+application/json`` is sent.
+"""
+
+from typing import Any
+
+from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_mcp_server.models.talk import (
+    TalkConversation,
+    TalkMessage,
+    TalkParticipant,
+)
+
+
+class TalkClient(BaseNextcloudClient):
+    """Client for Nextcloud Talk (spreed) app operations."""
+
+    app_name = "talk"
+
+    _ROOM_BASE = "/ocs/v2.php/apps/spreed/api/v4/room"
+    _CHAT_BASE = "/ocs/v2.php/apps/spreed/api/v1/chat"
+
+    def _talk_headers(self) -> dict[str, str]:
+        """Standard OCS+JSON headers for spreed API calls."""
+        return {
+            "OCS-APIRequest": "true",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    # Conversations (rooms)
+
+    async def list_conversations(
+        self,
+        *,
+        modified_since: int | None = None,
+        include_status: bool = False,
+        no_status_update: bool = True,
+    ) -> list[TalkConversation]:
+        """Return the user's Talk conversations.
+
+        Args:
+            modified_since: If provided, only return conversations modified
+                after this Unix timestamp (server-side filter).
+            include_status: Include user-status info for one-to-one rooms.
+            no_status_update: When True (default), the call does not bump
+                the user's "online" status — appropriate for an MCP server
+                acting in the background.
+        """
+        params: dict[str, Any] = {}
+        if modified_since is not None:
+            params["modifiedSince"] = modified_since
+        if include_status:
+            params["includeStatus"] = "true"
+        if no_status_update:
+            params["noStatusUpdate"] = 1
+        response = await self._make_request(
+            "GET", self._ROOM_BASE, params=params, headers=self._talk_headers()
+        )
+        data = response.json()["ocs"]["data"]
+        return [TalkConversation(**room) for room in data]
+
+    async def get_conversation(self, token: str) -> TalkConversation:
+        """Fetch a single Talk conversation by its room token."""
+        response = await self._make_request(
+            "GET", f"{self._ROOM_BASE}/{token}", headers=self._talk_headers()
+        )
+        return TalkConversation(**response.json()["ocs"]["data"])
+
+    async def create_conversation(
+        self,
+        *,
+        room_type: int = 2,
+        room_name: str,
+        invite: str | None = None,
+    ) -> TalkConversation:
+        """Create a new conversation (used for tests/fixtures).
+
+        Args:
+            room_type: 1=one-to-one, 2=group, 3=public. Defaults to 2.
+            room_name: Display name (required for group/public rooms).
+            invite: Optional user/group ID to invite at creation time.
+
+        This client method is not exposed as an MCP tool in the initial
+        Talk integration; it exists so integration tests can spin up
+        scratch rooms.
+        """
+        body: dict[str, Any] = {"roomType": room_type, "roomName": room_name}
+        if invite is not None:
+            body["invite"] = invite
+        response = await self._make_request(
+            "POST", self._ROOM_BASE, json=body, headers=self._talk_headers()
+        )
+        return TalkConversation(**response.json()["ocs"]["data"])
+
+    async def delete_conversation(self, token: str) -> None:
+        """Delete a conversation. Used by integration test cleanup."""
+        await self._make_request(
+            "DELETE", f"{self._ROOM_BASE}/{token}", headers=self._talk_headers()
+        )
+
+    # Chat
+
+    async def get_messages(
+        self,
+        token: str,
+        *,
+        limit: int = 50,
+        last_known_message_id: int | None = None,
+        look_into_future: bool = False,
+        set_read_marker: bool = False,
+        include_last_known: bool = False,
+    ) -> tuple[list[TalkMessage], int | None]:
+        """Fetch chat messages for a conversation.
+
+        Args:
+            token: Conversation token.
+            limit: Max messages to return (spreed caps this at 200).
+            last_known_message_id: Pagination cursor — pass the value
+                from the previous response's ``X-Chat-Last-Given`` header.
+            look_into_future: When False (default), return *older*
+                messages relative to ``last_known_message_id`` — i.e.,
+                read history. When True, this becomes a long-poll for
+                new messages, which we don't expose via MCP.
+            set_read_marker: When False (default), the call does not move
+                the user's read marker — consumers can call
+                ``mark_as_read`` explicitly.
+            include_last_known: Include the message identified by
+                ``last_known_message_id`` itself in the page.
+
+        Returns:
+            ``(messages, x_chat_last_given)`` where the integer is the
+            value of the ``X-Chat-Last-Given`` response header (or None
+            if the header was absent), suitable for pagination.
+        """
+        params: dict[str, Any] = {
+            "limit": limit,
+            "lookIntoFuture": 1 if look_into_future else 0,
+            "setReadMarker": 1 if set_read_marker else 0,
+            "includeLastKnown": 1 if include_last_known else 0,
+        }
+        if last_known_message_id is not None:
+            params["lastKnownMessageId"] = last_known_message_id
+        response = await self._make_request(
+            "GET",
+            f"{self._CHAT_BASE}/{token}",
+            params=params,
+            headers=self._talk_headers(),
+        )
+        # 200 OK → JSON body with messages; 304 Not Modified → no body.
+        # _make_request's raise_for_status() lets 3xx through for GET, but
+        # spreed returns 200 with an empty data list when there's nothing
+        # new, so we trust the JSON body here.
+        last_given_header = response.headers.get("X-Chat-Last-Given")
+        last_given = int(last_given_header) if last_given_header else None
+        data = response.json()["ocs"]["data"]
+        return [TalkMessage(**msg) for msg in data], last_given
+
+    async def send_message(
+        self,
+        token: str,
+        message: str,
+        *,
+        reply_to: int | None = None,
+        reference_id: str | None = None,
+        silent: bool = False,
+    ) -> TalkMessage:
+        """Post a chat message to a conversation.
+
+        Args:
+            token: Conversation token.
+            message: Message text (max 32000 chars per spreed docs/chat.md).
+            reply_to: Optional parent message ID to thread this reply.
+            reference_id: Optional client-provided UUID for idempotency on
+                retry (spreed dedupes on this within the conversation).
+            silent: When True, the message is delivered without push
+                notifications.
+        """
+        body: dict[str, Any] = {"message": message}
+        if reply_to is not None:
+            body["replyTo"] = reply_to
+        if reference_id is not None:
+            body["referenceId"] = reference_id
+        if silent:
+            body["silent"] = True
+        response = await self._make_request(
+            "POST",
+            f"{self._CHAT_BASE}/{token}",
+            json=body,
+            headers=self._talk_headers(),
+        )
+        return TalkMessage(**response.json()["ocs"]["data"])
+
+    async def mark_as_read(
+        self, token: str, *, last_read_message: int | None = None
+    ) -> None:
+        """Mark the conversation as read.
+
+        If ``last_read_message`` is provided it sets the read marker to
+        that message; otherwise spreed marks everything currently in the
+        room as read.
+        """
+        body: dict[str, Any] = {}
+        if last_read_message is not None:
+            body["lastReadMessage"] = last_read_message
+        await self._make_request(
+            "POST",
+            f"{self._CHAT_BASE}/{token}/read",
+            json=body,
+            headers=self._talk_headers(),
+        )
+
+    # Participants
+
+    async def list_participants(
+        self, token: str, *, include_status: bool = False
+    ) -> list[TalkParticipant]:
+        """List participants of a Talk conversation."""
+        params: dict[str, Any] = {}
+        if include_status:
+            params["includeStatus"] = "true"
+        response = await self._make_request(
+            "GET",
+            f"{self._ROOM_BASE}/{token}/participants",
+            params=params,
+            headers=self._talk_headers(),
+        )
+        data = response.json()["ocs"]["data"]
+        return [TalkParticipant(**p) for p in data]
