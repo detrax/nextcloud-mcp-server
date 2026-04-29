@@ -54,3 +54,28 @@ body:
         - Other / not sure
     validations:
       required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: MCP transport
+      options:
+        - stdio
+        - streamable-http
+        - sse (legacy)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How are you running the server?
+      options:
+        - uvx
+        - Docker / docker compose
+        - Helm chart on Kubernetes
+        - Local checkout (`uv run`)
+        - Other
+    validations:
+      required: true

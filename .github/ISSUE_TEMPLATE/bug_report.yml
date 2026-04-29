@@ -31,6 +31,7 @@ body:
         1. Call `nc_contacts_create` with `full_name`, `email`, `phone`
         2. Inspect the contact in the Nextcloud web UI
         3. Only the name is present
+      render: shell
     validations:
       required: true
 

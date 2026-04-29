@@ -1,5 +1,16 @@
 # Security Policy
 
+## Supported Versions
+
+Security fixes are issued only against the latest released version. Older
+versions do not receive backported patches — please upgrade before reporting,
+and confirm the issue still reproduces on the latest release where possible.
+
+| Version  | Supported |
+|----------|-----------|
+| latest   | ✅        |
+| < latest | ❌        |
+
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
@@ -27,4 +38,8 @@ Whichever channel you use, please include as much of the following as you can to
 - The version(s) of the project affected
 - Any known mitigations or workarounds
 
-We aim to acknowledge within 5 business days and provide a fix or mitigation timeline within 30 days, and will work with you on coordinated disclosure.
+We aim to:
+
+- Acknowledge reports within 5 business days.
+- Provide a fix or mitigation timeline within 30 days.
+- Work with you on coordinated disclosure.
