@@ -12,6 +12,7 @@ from .notes import configure_notes_tools
 from .semantic import configure_semantic_tools
 from .sharing import configure_sharing_tools
 from .tables import configure_tables_tools
+from .talk import configure_talk_tools
 from .webdav import configure_webdav_tools
 
 # Canonical mapping of app name → tool registration function.
@@ -29,6 +30,7 @@ AVAILABLE_APPS: dict[str, Callable[[FastMCP], None]] = {
     "cookbook": configure_cookbook_tools,
     "deck": configure_deck_tools,
     "news": configure_news_tools,
+    "talk": configure_talk_tools,
 }
 
 __all__ = [
@@ -43,5 +45,6 @@ __all__ = [
     "configure_semantic_tools",
     "configure_sharing_tools",
     "configure_tables_tools",
+    "configure_talk_tools",
     "configure_webdav_tools",
 ]

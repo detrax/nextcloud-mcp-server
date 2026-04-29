@@ -209,6 +209,7 @@ def require_scopes(*required_scopes: str):
                             "files.",
                             "tables.",
                             "deck.",
+                            "talk.",
                         ]
                     )
                 ]
@@ -229,6 +230,7 @@ def require_scopes(*required_scopes: str):
                             "files.",
                             "tables.",
                             "deck.",
+                            "talk.",
                         ]
                     )
 
