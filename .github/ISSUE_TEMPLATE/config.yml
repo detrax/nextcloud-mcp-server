@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/cbcoutinho/nextcloud-mcp-server/blob/master/SECURITY.md
+    about: Do not file security issues publicly. Email security@astrolabecloud.com — see SECURITY.md.
+  - name: Question or discussion
+    url: https://github.com/cbcoutinho/nextcloud-mcp-server/discussions
+    about: For general questions, deployment help, or open-ended discussion, please use Discussions instead of opening an issue.

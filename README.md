@@ -248,7 +248,7 @@ This project takes security seriously:
 - No credential storage in OAuth mode
 - Regular security assessments
 
-Found a security issue? Please report it privately to the maintainers.
+Found a security issue? **Do not open a public GitHub issue.** Please report it privately by emailing **security@astrolabecloud.com**. See [SECURITY.md](./SECURITY.md) for details.
 
 ## License
 
