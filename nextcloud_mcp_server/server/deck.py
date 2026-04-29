@@ -7,6 +7,7 @@ from mcp.types import ToolAnnotations
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.deck import (
+    CardCommentOperationResponse,
     CardOperationResponse,
     CreateBoardResponse,
     CreateCardResponse,
@@ -14,10 +15,12 @@ from nextcloud_mcp_server.models.deck import (
     CreateStackResponse,
     DeckBoard,
     DeckCard,
+    DeckComment,
     DeckLabel,
     DeckStack,
     LabelOperationResponse,
     ListBoardsResponse,
+    ListCardCommentsResponse,
     ListCardsResponse,
     ListLabelsResponse,
     ListStacksResponse,
@@ -721,4 +724,100 @@ def configure_deck_tools(mcp: FastMCP):
             card_id=card_id,
             stack_id=stack_id,
             board_id=board_id,
+        )
+
+    # Card Comment Tools
+
+    @mcp.tool(
+        title="List Deck Card Comments",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("deck.read")
+    @instrument_tool
+    async def deck_get_card_comments(
+        ctx: Context, card_id: int, limit: int = 20, offset: int = 0
+    ) -> ListCardCommentsResponse:
+        """List comments on a Nextcloud Deck card
+
+        Args:
+            card_id: The ID of the card
+            limit: Maximum number of comments to return (default 20, max 200)
+            offset: Pagination offset (default 0)
+        """
+        client = await get_client(ctx)
+        comments = await client.deck.get_comments(card_id, limit=limit, offset=offset)
+        return ListCardCommentsResponse(results=comments, total=len(comments))
+
+    @mcp.tool(
+        title="Create Deck Card Comment",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write")
+    @instrument_tool
+    async def deck_create_card_comment(
+        ctx: Context,
+        card_id: int,
+        message: str,
+        parent_id: Optional[int] = None,
+    ) -> DeckComment:
+        """Create a comment on a Nextcloud Deck card
+
+        Supports @-mentions (e.g. "@alice"). Pass parent_id to reply to an
+        existing comment on the same card. Message is limited to 1000 characters.
+
+        Args:
+            card_id: The ID of the card to comment on
+            message: The comment text (max 1000 characters)
+            parent_id: Optional ID of a parent comment to reply to
+        """
+        client = await get_client(ctx)
+        return await client.deck.create_comment(card_id, message, parent_id=parent_id)
+
+    @mcp.tool(
+        title="Update Deck Card Comment",
+        annotations=ToolAnnotations(idempotentHint=False, openWorldHint=True),
+    )
+    @require_scopes("deck.write")
+    @instrument_tool
+    async def deck_update_card_comment(
+        ctx: Context, card_id: int, comment_id: int, message: str
+    ) -> DeckComment:
+        """Update a Nextcloud Deck card comment
+
+        Only the comment's author can update it; the server returns 403 otherwise.
+
+        Args:
+            card_id: The ID of the card the comment belongs to
+            comment_id: The ID of the comment to update
+            message: The new comment text (max 1000 characters)
+        """
+        client = await get_client(ctx)
+        return await client.deck.update_comment(card_id, comment_id, message)
+
+    @mcp.tool(
+        title="Delete Deck Card Comment",
+        annotations=ToolAnnotations(
+            destructiveHint=True, idempotentHint=True, openWorldHint=True
+        ),
+    )
+    @require_scopes("deck.write")
+    @instrument_tool
+    async def deck_delete_card_comment(
+        ctx: Context, card_id: int, comment_id: int
+    ) -> CardCommentOperationResponse:
+        """Delete a Nextcloud Deck card comment
+
+        Only the comment's author can delete it; the server returns 403 otherwise.
+
+        Args:
+            card_id: The ID of the card the comment belongs to
+            comment_id: The ID of the comment to delete
+        """
+        client = await get_client(ctx)
+        await client.deck.delete_comment(card_id, comment_id)
+        return CardCommentOperationResponse(
+            success=True,
+            message="Comment deleted successfully",
+            card_id=card_id,
+            comment_id=comment_id,
         )

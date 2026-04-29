@@ -280,3 +280,20 @@ class LabelOperationResponse(StatusResponse):
 
     label_id: int = Field(description="ID of the affected label")
     board_id: int = Field(description="ID of the board containing the label")
+
+
+# Comment Response Models
+
+
+class ListCardCommentsResponse(BaseResponse):
+    """Response model for listing card comments."""
+
+    results: list[DeckComment] = Field(description="List of card comments")
+    total: int = Field(description="Number of comments returned")
+
+
+class CardCommentOperationResponse(StatusResponse):
+    """Response model for card comment create/update/delete operations."""
+
+    card_id: int = Field(description="ID of the card the comment belongs to")
+    comment_id: int = Field(description="ID of the affected comment")
