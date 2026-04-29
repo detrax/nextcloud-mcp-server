@@ -188,6 +188,7 @@ def configure_talk_tools(mcp: FastMCP) -> None:
             token,
             message,
             reply_to=reply_to,
+            # 32 hex chars, no dashes — spreed accepts either UUID format.
             reference_id=uuid.uuid4().hex,
             silent=silent,
         )

@@ -58,6 +58,9 @@ class TalkConversation(BaseModel):
     unreadMessages: int = 0
     unreadMention: bool = False
     lastActivity: int | None = None
+    # spreed returns `0` (not `null`) when the user has not read any
+    # message in the room yet — compare to ``None`` explicitly rather
+    # than relying on truthiness, since `0` is falsy but valid.
     lastReadMessage: int | None = None
     lastMessage: TalkMessage | None = None
     readOnly: int | None = None
