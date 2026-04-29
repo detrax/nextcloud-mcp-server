@@ -136,13 +136,18 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
 
 
 async def _get_cached_discovery(url: str) -> dict[str, Any]:
-    """Fetch OIDC discovery document with caching (5-minute TTL)."""
+    """Fetch OIDC discovery document with caching (5-minute TTL).
+
+    Follows redirects so the configured discovery URL works against Nextcloud
+    instances without pretty URLs enabled, where ``/.well-known/openid-configuration``
+    issues a 301 to ``/index.php/.well-known/openid-configuration``.
+    """
     now = time.time()
     if url in _discovery_cache:
         expires_at, data = _discovery_cache[url]
         if now < expires_at:
             return data
-    async with nextcloud_httpx_client() as http_client:
+    async with nextcloud_httpx_client(follow_redirects=True) as http_client:
         response = await http_client.get(url)
         response.raise_for_status()
         data = response.json()
