@@ -911,7 +911,7 @@ For detailed observability setup, see [docs/observability.md](observability.md).
 
 ### Related Documentation
 
-- **[OAuth Architecture](oauth-architecture.md)** - OAuth flows, scopes, token management
+- **[Login Flow v2](login-flow-v2.md)** - OAuth flows, scopes, token management
 - **[Comparison with Context Agent](comparison-context-agent.md)** - When to use Nextcloud MCP Server vs Context Agent
 
 ---

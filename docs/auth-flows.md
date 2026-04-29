@@ -1,23 +1,22 @@
 # Authentication Flows by Deployment Mode
 
-This document provides a unified reference for authentication flows across all deployment modes. For configuration details, see [Authentication](authentication.md). For OAuth protocol details, see [OAuth Architecture](oauth-architecture.md).
+This document provides a unified reference for the auth flows in each supported deployment mode. For configuration details, see [Authentication](authentication.md). For Login Flow v2 architecture and setup, see [Login Flow v2](login-flow-v2.md).
 
 ## Quick Reference Matrix
 
 | Mode | Client → MCP → NC | Background Sync | Astrolabe → MCP |
 |------|-------------------|-----------------|-----------------|
 | [Single-User BasicAuth](#1-single-user-basicauth) | Embedded credentials | Same credentials | N/A |
-| [Multi-User BasicAuth](#2-multi-user-basicauth) | Header pass-through | App password (optional) | Bearer token |
-| [OAuth Single-Audience](#3-oauth-single-audience-default) | Multi-audience token | Refresh token exchange | Bearer token |
-| [OAuth Token Exchange](#4-oauth-token-exchange-rfc-8693) | RFC 8693 exchange | Refresh token exchange | Bearer token |
+| [Multi-User BasicAuth](#2-multi-user-basicauth) | Header pass-through | Stored app password (optional) | OAuth Bearer token |
+| [Login Flow v2](#3-login-flow-v2) | OAuth → MCP, app pwd → NC | Stored app password | OAuth Bearer token |
 
 ## Communication Patterns
 
 This document covers three distinct communication patterns:
 
-1. **MCP Client → MCP Server → Nextcloud**: Interactive tool calls initiated by users through MCP clients (Claude Desktop, etc.)
-2. **MCP Server → Nextcloud**: Background operations like vector sync that run without user interaction
-3. **Astrolabe → MCP Server**: Nextcloud app backend communication for settings UI and unified search
+1. **MCP Client → MCP Server → Nextcloud**: Interactive tool calls initiated by users through MCP clients (Claude Desktop, claude.ai, custom clients).
+2. **MCP Server → Nextcloud**: Background operations like vector sync that run without user interaction.
+3. **Astrolabe → MCP Server**: Astrolabe app backend communication for settings UI and unified search.
 
 ---
 
@@ -47,23 +46,21 @@ MCP Client                    MCP Server                   Nextcloud
 - No MCP-level authentication required (server trusts local clients)
 - All requests use the same Nextcloud user
 
-**Implementation:** `context.py:78-79` - Returns shared client from lifespan context
+**Implementation:** `context.py` — returns the shared client from lifespan context
 
 #### Background Sync
 
 Uses the same embedded credentials as interactive requests. The background job accesses Nextcloud with the configured username/password.
 
-**Implementation:** Background jobs use `get_settings()` to access credentials
-
 #### Astrolabe Integration
 
-Not applicable - Astrolabe is only used in multi-user deployments where users need personal settings and token management.
+Not applicable — Astrolabe is only used in multi-user deployments where users need personal settings and per-user state.
 
 ---
 
 ### 2. Multi-User BasicAuth
 
-**Use Case:** Internal deployment where users provide their own credentials via HTTP headers.
+**Use Case:** Internal deployment where users provide their own Nextcloud credentials via HTTP headers.
 
 #### MCP Client → MCP Server → Nextcloud
 
@@ -83,38 +80,31 @@ MCP Client                    MCP Server                   Nextcloud
 ```
 
 **Key characteristics:**
-- `BasicAuthMiddleware` extracts credentials from `Authorization: Basic` header
+- `BasicAuthMiddleware` extracts credentials from the `Authorization: Basic` header
 - Credentials passed through to Nextcloud (not stored)
 - Client created per-request from extracted credentials
-- Stateless - no credential storage between requests
-
-**Implementation:** `context.py:187-248` - `_get_client_from_basic_auth()` extracts credentials from request state
+- Stateless — no credential storage between requests
 
 #### Background Sync (Optional)
 
-Requires `ENABLE_OFFLINE_ACCESS=true`. Users can store app passwords via Astrolabe for background operations.
+If users provision an app password (via Astrolabe or `nc_auth_provision_access`), the server can run background jobs on their behalf:
 
 ```
 Astrolabe                     MCP Server                   Nextcloud
     │                             │                            │
-    │── Store App Password ──────▶│                            │
+    │── Store app password ──────▶│                            │
     │   (via management API)      │                            │
-    │                             │── Store in SQLite ────────▶│
-    │                             │   (encrypted)              │
+    │                             │── Encrypt + persist ──────▶│
+    │                             │   (SQLite, Fernet)         │
     │◀── Confirmation ────────────│                            │
     │                             │                            │
-    │         [Background Job]    │                            │
+    │         [Background job]    │                            │
     │                             │── Retrieve app password ──▶│
-    │                             │   (from encrypted storage) │
     │                             │── HTTP + BasicAuth ───────▶│
-    │                             │   (stored app password)    │
     │                             │◀── API Response ───────────│
 ```
 
-**Requirements:**
-- `ENABLE_OFFLINE_ACCESS=true`
-- `TOKEN_ENCRYPTION_KEY` for credential encryption
-- `TOKEN_STORAGE_DB` for SQLite storage path
+**Requirements:** `TOKEN_ENCRYPTION_KEY`, `TOKEN_STORAGE_DB`.
 
 #### Astrolabe → MCP Server
 
@@ -132,173 +122,89 @@ Astrolabe                     MCP Server                   Nextcloud OIDC
 ```
 
 **Key characteristics:**
-- Astrolabe has its own OAuth client (`astrolabe_client_id` in Nextcloud config)
-- Tokens are validated by MCP server using Nextcloud OIDC JWKS
+- Astrolabe has its own OAuth client registered in Nextcloud
+- Tokens are validated by the MCP server using Nextcloud OIDC JWKS
 - Authorization check: `token.sub == requested_resource_owner`
-- Any valid Nextcloud OIDC token accepted (relaxed audience validation per ADR-018)
-
-**Implementation:** `unified_verifier.py:120-183` - `verify_token_for_management_api()` validates without strict audience check
 
 ---
 
-### 3. OAuth Single-Audience (Default)
+### 3. Login Flow v2
 
-**Use Case:** Multi-user deployment with OAuth authentication. Tokens work for both MCP and Nextcloud.
+**Use Case:** Hosted multi-user deployments, OAuth-based MCP clients (claude.ai, Astrolabe Cloud), production. Recommended for any setup where MCP clients shouldn't handle Nextcloud credentials directly.
 
-This is the default mode when `NEXTCLOUD_USERNAME`/`NEXTCLOUD_PASSWORD` are not set.
+This mode replaces the previously-supported "OAuth Single-Audience" and "OAuth Token Exchange" modes, both of which required upstream Nextcloud patches that were never merged. See [ADR-022](ADR-022-deployment-mode-consolidation.md) for the rationale.
 
-#### MCP Client → MCP Server → Nextcloud
+#### MCP Client → MCP Server → Nextcloud (steady state)
 
 ```
 MCP Client                    MCP Server                   Nextcloud
     │                             │                            │
     │── Bearer Token ────────────▶│                            │
-    │   aud: ["mcp-server",       │                            │
-    │         "nextcloud"]        │                            │
-    │                             │── Validate MCP audience ──▶│
-    │                             │   (UnifiedTokenVerifier)   │
+    │   (issued by MCP server,    │                            │
+    │    mcp:* scopes)            │                            │
+    │                             │── Validate scopes ─────────│
+    │                             │   (@require_scopes)        │
     │                             │                            │
-    │                             │── HTTP + Same Token ──────▶│
-    │                             │   Authorization: Bearer    │
-    │                             │   (multi-audience token)   │
+    │                             │── Lookup user's            │
+    │                             │   stored app password      │
     │                             │                            │
-    │                             │   NC validates its own aud │
+    │                             │── HTTP + BasicAuth ───────▶│
+    │                             │   Authorization: Basic     │
+    │                             │   (per-user app password)  │
     │                             │◀── API Response ───────────│
     │◀── Tool Result ─────────────│                            │
 ```
 
 **Key characteristics:**
-- Token contains both audiences: `aud: ["mcp-server", "nextcloud"]`
-- MCP server validates only MCP audience (per RFC 7519)
-- Nextcloud independently validates its own audience
-- No token exchange needed - same token used throughout
-- Stateless operation for interactive requests
+- MCP client authenticates to MCP server via OAuth 2.1 + PKCE
+- MCP server is the OAuth authorization server (DCR via RFC 7591)
+- `mcp:*` scopes (e.g. `mcp:notes.read`, `mcp:notes.write`) gate tool access
+- Per-user app password obtained via Login Flow v2 and stored encrypted in SQLite
+- App passwords appear in Nextcloud's **Settings → Security → Devices & Sessions** and are user-revocable
 
-**Token validation flow:**
-1. `UnifiedTokenVerifier.verify_token()` validates MCP audience
-2. Token passed directly to Nextcloud via `get_client_from_context()`
-3. Nextcloud validates its own audience when receiving API calls
+#### First-Use Provisioning (one-time per user)
 
-**Implementation:**
-- `unified_verifier.py:185-252` - `_verify_mcp_audience()` validates MCP audience only
-- `context.py:96-99` - Uses token directly in multi-audience mode
+```
+MCP Client                    MCP Server                   Nextcloud
+    │                             │                            │
+    │── Bearer Token + request ──▶│                            │
+    │                             │   No stored app password   │
+    │                             │                            │
+    │◀── Elicit URL or 401 ───────│                            │
+    │   "Visit <login-url>"       │                            │
+    │                             │── POST /index.php/login/v2▶│
+    │                             │◀── login_url, poll_token ──│
+    │                             │                            │
+    │   User opens login_url in browser, authenticates, "Grant"│
+    │   ──────────────────────────────────────────────────────▶│
+    │                             │                            │
+    │                             │── Poll endpoint (bg) ─────▶│
+    │                             │◀── loginName, appPassword ─│
+    │                             │                            │
+    │                             │── Encrypt + store          │
+    │                             │   in tokens.db             │
+    │                             │                            │
+    │── Retry request ───────────▶│── Basic Auth as above ────▶│
+```
 
 #### Background Sync
 
-Requires `ENABLE_OFFLINE_ACCESS=true`. Uses stored refresh tokens to obtain access tokens for background operations.
+Uses the same per-user app password retrieved from encrypted storage. No token refresh needed — Nextcloud app passwords don't expire (until the user revokes them).
 
 ```
-                              MCP Server                   Nextcloud OIDC
+                              MCP Server                   Nextcloud
                                   │                            │
-    [Background Job starts]       │                            │
-                                  │── Get refresh token ──────▶│
-                                  │   (from encrypted storage) │
+    [Background job starts]       │                            │
+                                  │── Retrieve app password ──▶│
+                                  │   (per user, from SQLite)  │
                                   │                            │
-                                  │── Token refresh request ──▶│
-                                  │   grant_type=refresh_token │
-                                  │   scope=openid profile ... │
-                                  │◀── New access + refresh ───│
-                                  │   (rotation)               │
-                                  │                            │
-                                  │── Store rotated refresh ──▶│
-                                  │   (encrypted)              │
-                                  │                            │
-                                  │── HTTP + Access Token ────▶│
-                                  │   Authorization: Bearer    │
+                                  │── HTTP + BasicAuth ───────▶│
                                   │◀── API Response ───────────│
 ```
 
-**Key characteristics:**
-- Refresh tokens stored encrypted in SQLite (`TOKEN_STORAGE_DB`)
-- Nextcloud OIDC rotates refresh tokens on every use (one-time use)
-- `TokenBrokerService` handles token lifecycle
-- Per-user locking prevents race conditions during concurrent refresh
-
-**Implementation:**
-- `token_broker.py:269-362` - `get_background_token()` handles refresh with locking
-- `token_broker.py:428-509` - `_refresh_access_token_with_scopes()` exchanges refresh token
-
 #### Astrolabe → MCP Server
 
-Same as Multi-User BasicAuth. See [Astrolabe → MCP Server](#astrolabe--mcp-server) above.
-
----
-
-### 4. OAuth Token Exchange (RFC 8693)
-
-**Use Case:** Multi-user deployment where MCP tokens are separate from Nextcloud tokens. Provides stronger security boundaries.
-
-Enabled by `ENABLE_TOKEN_EXCHANGE=true`.
-
-#### MCP Client → MCP Server → Nextcloud
-
-```
-MCP Client                    MCP Server                   Nextcloud OIDC
-    │                             │                            │
-    │── Bearer Token ────────────▶│                            │
-    │   aud: "mcp-server"         │                            │
-    │   (MCP audience only)       │                            │
-    │                             │── Validate MCP audience ──▶│
-    │                             │                            │
-    │                             │── RFC 8693 Exchange ──────▶│
-    │                             │   grant_type=              │
-    │                             │     urn:ietf:params:oauth: │
-    │                             │     grant-type:token-exchange
-    │                             │   subject_token=<mcp-token>│
-    │                             │   requested_audience=      │
-    │                             │     "nextcloud"            │
-    │                             │◀── Delegated Token ────────│
-    │                             │   aud: "nextcloud"         │
-    │                             │                            │
-    │                             │── HTTP + Delegated Token ─▶│
-    │                             │   Authorization: Bearer    │
-    │                             │◀── API Response ───────────│
-    │◀── Tool Result ─────────────│                            │
-```
-
-**Key characteristics:**
-- Strict audience separation: MCP token has `aud: "mcp-server"` only
-- Server exchanges for Nextcloud-audience token on each request
-- Ephemeral delegated tokens (not cached by default)
-- Strongest security boundary between MCP and Nextcloud access
-
-**Token exchange details:**
-- Uses RFC 8693 "urn:ietf:params:oauth:grant-type:token-exchange"
-- Subject token: MCP access token
-- Requested audience: Nextcloud resource URI
-- Result: Short-lived token scoped for Nextcloud
-
-**Implementation:**
-- `token_broker.py:220-267` - `get_session_token()` performs on-demand exchange
-- `token_exchange.py` - `exchange_token_for_delegation()` implements RFC 8693
-- `context.py:88-94` - Routes to session client in exchange mode
-
-#### Background Sync
-
-Same as OAuth Single-Audience. Uses stored refresh tokens from Flow 2 provisioning.
-
-```
-                              MCP Server                   Nextcloud OIDC
-                                  │                            │
-    [User provisions access]      │                            │
-                                  │── Flow 2 OAuth ───────────▶│
-                                  │   client_id="mcp-server"   │
-                                  │   scope=offline_access ... │
-                                  │◀── Refresh Token ──────────│
-                                  │   (stored encrypted)       │
-                                  │                            │
-    [Background Job runs later]   │                            │
-                                  │── Refresh for background ─▶│
-                                  │   (same as single-audience)│
-```
-
-**Key difference from interactive:**
-- Interactive: On-demand token exchange per request
-- Background: Uses pre-provisioned refresh tokens (Flow 2)
-
-#### Astrolabe → MCP Server
-
-Same as Multi-User BasicAuth. See [Astrolabe → MCP Server](#astrolabe--mcp-server) above.
+Same as Multi-User BasicAuth — see [Astrolabe → MCP Server](#astrolabe--mcp-server) above.
 
 ---
 
@@ -306,57 +212,42 @@ Same as Multi-User BasicAuth. See [Astrolabe → MCP Server](#astrolabe--mcp-ser
 
 ### Single-User BasicAuth
 ```bash
-NEXTCLOUD_HOST=http://localhost:8080
+NEXTCLOUD_HOST=https://nextcloud.example.com
 NEXTCLOUD_USERNAME=admin
-NEXTCLOUD_PASSWORD=password
+NEXTCLOUD_PASSWORD=<app-password>
 ```
 
 ### Multi-User BasicAuth
 ```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
+NEXTCLOUD_HOST=https://nextcloud.example.com
 ENABLE_MULTI_USER_BASIC_AUTH=true
 
-# Optional: For background sync
-ENABLE_OFFLINE_ACCESS=true
-TOKEN_ENCRYPTION_KEY=<32-byte-key>
-TOKEN_STORAGE_DB=/data/tokens.db
+# Optional: app-password storage for background sync
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+TOKEN_STORAGE_DB=/app/data/tokens.db
 ```
 
-### OAuth Single-Audience (Default)
+### Login Flow v2
 ```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
-# No username/password triggers OAuth mode
+NEXTCLOUD_HOST=https://nextcloud.example.com
+ENABLE_LOGIN_FLOW=true
 
-# Optional: Static client credentials (instead of DCR)
-NEXTCLOUD_OIDC_CLIENT_ID=<client-id>
-NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret>
+# Required for app-password storage
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+TOKEN_STORAGE_DB=/app/data/tokens.db
 
-# Optional: For background sync
-ENABLE_OFFLINE_ACCESS=true
-TOKEN_ENCRYPTION_KEY=<32-byte-key>
-TOKEN_STORAGE_DB=/data/tokens.db
+# Public URLs (for browser redirects)
+NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
+NEXTCLOUD_PUBLIC_ISSUER_URL=https://nextcloud.example.com
 ```
 
-### OAuth Token Exchange
-```bash
-NEXTCLOUD_HOST=http://nextcloud.example.com
-ENABLE_TOKEN_EXCHANGE=true
-NEXTCLOUD_OIDC_CLIENT_ID=<client-id>
-NEXTCLOUD_OIDC_CLIENT_SECRET=<client-secret>
-
-# Optional: For background sync
-ENABLE_OFFLINE_ACCESS=true
-TOKEN_ENCRYPTION_KEY=<32-byte-key>
-TOKEN_STORAGE_DB=/data/tokens.db
-```
+See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troubleshooting.
 
 ---
 
 ## Related Documentation
 
-- [Authentication](authentication.md) - Configuration details and setup guides
-- [OAuth Architecture](oauth-architecture.md) - Deep OAuth protocol details
-- [ADR-004: Progressive Consent](ADR-004-mcp-application-oauth.md) - Dual OAuth flow architecture
-- [ADR-005: Token Audience Validation](ADR-005-token-audience-validation.md) - Audience validation strategy
-- [ADR-018: Nextcloud PHP App](ADR-018-nextcloud-php-app-for-settings-ui.md) - Astrolabe integration
-- [ADR-020: Deployment Modes](ADR-020-deployment-modes-and-configuration-validation.md) - Mode detection and validation
+- [Authentication](authentication.md) — mode comparison and selection
+- [Login Flow v2](login-flow-v2.md) — multi-user setup details
+- [Configuration](configuration.md) — environment variable reference
+- [ADR-022](ADR-022-deployment-mode-consolidation.md) — design rationale for mode consolidation

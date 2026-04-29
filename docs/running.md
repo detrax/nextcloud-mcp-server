@@ -8,7 +8,7 @@ Before running the server:
 
 1. **Install the server** - See [Installation Guide](installation.md)
 2. **Configure environment** - See [Configuration Guide](configuration.md)
-3. **Set up authentication** - See [OAuth Setup](oauth-setup.md) or [Authentication](authentication.md)
+3. **Set up authentication** - See [Authentication](authentication.md) (multi-user deployments: see [Login Flow v2](login-flow-v2.md))
 
 ---
 
@@ -425,6 +425,7 @@ See [Troubleshooting OAuth](troubleshooting.md) for detailed OAuth troubleshooti
 ## See Also
 
 - [Configuration Guide](configuration.md) - Environment variables
-- [OAuth Setup](oauth-setup.md) - OAuth authentication setup
+- [Authentication](authentication.md) - Authentication modes
+- [Login Flow v2](login-flow-v2.md) - Recommended multi-user setup
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
 - [Installation](installation.md) - Installing the server

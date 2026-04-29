@@ -30,144 +30,86 @@ Then choose your deployment mode:
 
 ## Deployment Mode Selection
 
-**New in v0.58.0:** You can explicitly declare your deployment mode to remove ambiguity and catch configuration errors early.
+The server supports three deployment modes. See [Authentication](authentication.md) for the full comparison and [Login Flow v2](login-flow-v2.md) for the recommended multi-user setup.
+
+| Mode | When to use |
+|------|-------------|
+| `single_user_basic` | Personal use, dev — credentials in env vars |
+| `multi_user_basic` | Internal deployments — clients send credentials via `Authorization: Basic` header |
+| `login_flow_v2` | Hosted / OAuth-based MCP clients (claude.ai, Astrolabe Cloud) — recommended for multi-user |
+
+You can declare the mode explicitly:
 
 ```dotenv
-# Optional but recommended
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow_v2
 ```
 
-**Valid values:**
-- `single_user_basic` - Single-user with username/password
-- `multi_user_basic` - Multi-user with BasicAuth pass-through
-- `oauth_single_audience` - Multi-user OAuth (recommended)
-- `oauth_token_exchange` - Multi-user OAuth with token exchange
-
-**Benefits:**
-- ✅ Clear which mode is active
-- ✅ Better validation error messages
-- ✅ Self-documenting configuration
-- ✅ Catches configuration mistakes early
-
-**Auto-detection:** If `MCP_DEPLOYMENT_MODE` is not set, the server auto-detects the mode based on other settings (existing behavior).
-
-See [Authentication Modes](authentication.md) for detailed comparison of deployment modes.
+If `MCP_DEPLOYMENT_MODE` is not set, the server auto-detects from the other env vars below.
 
 ---
 
 ## Single-User BasicAuth Mode
 
-BasicAuth with a single user is the simplest deployment mode. Use for personal instances, local development, and testing.
+The simplest mode. Use for personal instances, local development, and testing.
 
 ```dotenv
-# Minimal single-user configuration
-NEXTCLOUD_HOST=http://localhost:8080
-NEXTCLOUD_USERNAME=admin
-NEXTCLOUD_PASSWORD=password
-
-# Optional: Explicit mode declaration
-MCP_DEPLOYMENT_MODE=single_user_basic
-```
-
-> [!WARNING]
-> **Security Notice:** BasicAuth stores credentials in environment variables and is less secure than OAuth. Use OAuth for production multi-user deployments.
-
----
-
-## Multi-User OAuth Modes
-
-OAuth2/OIDC is the recommended authentication mode for production multi-user deployments.
-
-### Minimal Configuration (Auto-registration)
-
-```dotenv
-# .env file for OAuth with auto-registration
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-
-# Optional: Explicit mode declaration (recommended)
-MCP_DEPLOYMENT_MODE=oauth_single_audience
-
-# Leave these EMPTY for OAuth mode
-NEXTCLOUD_USERNAME=
-NEXTCLOUD_PASSWORD=
-```
-
-This minimal configuration uses dynamic client registration to automatically register an OAuth client at startup.
-
-### Full Configuration (Pre-configured Client)
-
-```dotenv
-# .env file for OAuth with pre-configured client
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-
-# Optional: Explicit mode declaration (recommended)
-MCP_DEPLOYMENT_MODE=oauth_single_audience
-
-# OAuth Client Credentials (optional - auto-registers if not provided)
-NEXTCLOUD_OIDC_CLIENT_ID=your-client-id
-NEXTCLOUD_OIDC_CLIENT_SECRET=your-client-secret
-
-# OAuth Callback Settings (optional)
-NEXTCLOUD_MCP_SERVER_URL=http://localhost:8000
-
-# Leave these EMPTY for OAuth mode
-NEXTCLOUD_USERNAME=
-NEXTCLOUD_PASSWORD=
-```
-
-### Environment Variables Reference
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `NEXTCLOUD_HOST` | ✅ Yes | - | Full URL of your Nextcloud instance (e.g., `https://cloud.example.com`) |
-| `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Optional | - | OAuth client ID (auto-registers if empty) |
-| `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Optional | - | OAuth client secret (auto-registers if empty) |
-| `NEXTCLOUD_MCP_SERVER_URL` | ⚠️ Optional | `http://localhost:8000` | MCP server URL for OAuth callbacks |
-| `OIDC_RESOURCE_SERVER_ID` | ⚠️ Optional | - | Resource server identifier for IdPs that require prefixed scopes (e.g., AWS Cognito). When set, resource scopes are sent as `{id}/{scope}` |
-| `NEXTCLOUD_USERNAME` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
-| `NEXTCLOUD_PASSWORD` | ❌ Must be empty | - | Leave empty to enable OAuth mode |
-
-### Prerequisites
-
-Before using OAuth configuration:
-
-1. **Install required Nextcloud apps** (both are required):
-   - **`oidc`** - OIDC Identity Provider (Apps → Security)
-   - **`user_oidc`** - OpenID Connect user backend (Apps → Security)
-
-2. **Configure the apps**:
-   - Enable dynamic client registration (if using auto-registration) - Settings → OIDC
-   - Enable Bearer token validation: `php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean`
-
-3. **Apply Bearer token patch** - The `user_oidc` app requires a patch for non-OCS endpoints - See [Upstream Status](oauth-upstream-status.md) for details
-
-See the [OAuth Setup Guide](oauth-setup.md) for detailed step-by-step instructions, or [OAuth Quick Start](quickstart-oauth.md) for a 5-minute setup.
-
----
-
-## Basic Authentication (Legacy)
-
-Basic Authentication is maintained for backward compatibility. It uses username and password credentials.
-
-> [!WARNING]
-> **Security Notice:** Basic Authentication stores credentials in environment variables and is less secure than OAuth. Use OAuth for production deployments.
-
-### Configuration
-
-```dotenv
-# .env file for BasicAuth mode
 NEXTCLOUD_HOST=https://your.nextcloud.instance.com
 NEXTCLOUD_USERNAME=your_nextcloud_username
-NEXTCLOUD_PASSWORD=your_app_password_or_password
+NEXTCLOUD_PASSWORD=your_app_password
 ```
-
-### Environment Variables Reference
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `NEXTCLOUD_HOST` | ✅ Yes | Full URL of your Nextcloud instance |
 | `NEXTCLOUD_USERNAME` | ✅ Yes | Your Nextcloud username |
-| `NEXTCLOUD_PASSWORD` | ✅ Yes | **Recommended:** Use a dedicated [Nextcloud App Password](https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices). Generate one in Nextcloud Security settings. Alternatively, use your login password (less secure). |
+| `NEXTCLOUD_PASSWORD` | ✅ Yes | Use a dedicated [Nextcloud app password](https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices), not your login password |
+
+---
+
+## Multi-User BasicAuth Mode
+
+Each MCP client sends its own Nextcloud credentials in an `Authorization: Basic` header. The server passes them through per-request and never persists them.
+
+```dotenv
+NEXTCLOUD_HOST=https://your.nextcloud.instance.com
+ENABLE_MULTI_USER_BASIC_AUTH=true
+
+# Optional: enable per-user app-password storage for background sync
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+TOKEN_STORAGE_DB=/app/data/tokens.db
+```
+
+`NEXTCLOUD_USERNAME` and `NEXTCLOUD_PASSWORD` must NOT be set in this mode.
+
+---
+
+## Login Flow v2 Mode
+
+The recommended multi-user mode. MCP clients authenticate to the MCP server via OAuth; the server holds per-user Nextcloud app passwords (encrypted) obtained via Login Flow v2.
+
+```dotenv
+NEXTCLOUD_HOST=https://your.nextcloud.instance.com
+ENABLE_LOGIN_FLOW=true
+
+# App-password storage (required)
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+TOKEN_STORAGE_DB=/app/data/tokens.db
+
+# Public URLs for browser redirects
+NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
+NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.instance.com
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXTCLOUD_HOST` | ✅ Yes | Internal URL of your Nextcloud instance (server-to-server) |
+| `ENABLE_LOGIN_FLOW` | ✅ Yes | Set to `true` to enable Login Flow v2 |
+| `TOKEN_ENCRYPTION_KEY` | ✅ Yes | Fernet key for app-password encryption — generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `TOKEN_STORAGE_DB` | ✅ Yes | Path to SQLite DB for stored app passwords (use a persistent volume) |
+| `NEXTCLOUD_MCP_SERVER_URL` | ✅ Yes | Public URL of the MCP server (OAuth issuer) |
+| `NEXTCLOUD_PUBLIC_ISSUER_URL` | ✅ Yes | Public URL of Nextcloud (for browser redirects during Login Flow v2) |
+
+See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troubleshooting.
 
 ---
 
@@ -247,10 +189,11 @@ QDRANT_LOCATION=:memory:
 OLLAMA_BASE_URL=http://ollama:11434
 ```
 
-**Multi-User OAuth Mode:**
+**Multi-User Login Flow v2 Mode:**
 ```dotenv
 NEXTCLOUD_HOST=https://nextcloud.example.com
-MCP_DEPLOYMENT_MODE=oauth_single_audience
+MCP_DEPLOYMENT_MODE=login_flow_v2
+ENABLE_LOGIN_FLOW=true
 
 # Enable semantic search
 # In multi-user modes, this AUTOMATICALLY enables background operations!
@@ -710,12 +653,9 @@ uv run nextcloud-mcp-server --no-oauth \
 ## See Also
 
 - [Configuration Migration Guide v2](configuration-migration-v2.md) - **New in v0.58.0:** Migrate from old variable names
-- [OAuth Quick Start](quickstart-oauth.md) - 5-minute OAuth setup for development
-- [OAuth Setup Guide](oauth-setup.md) - Detailed OAuth configuration for production
-- [OAuth Architecture](oauth-architecture.md) - How OAuth works in the MCP server
-- [Upstream Status](oauth-upstream-status.md) - Required patches and upstream PRs
 - [Authentication](authentication.md) - Authentication modes comparison
+- [Login Flow v2](login-flow-v2.md) - Recommended multi-user setup
 - [Running the Server](running.md) - Starting the server with different configurations
 - [Troubleshooting](troubleshooting.md) - Common configuration issues
-- [OAuth Troubleshooting](oauth-troubleshooting.md) - OAuth-specific troubleshooting
 - [ADR-021](ADR-021-configuration-consolidation.md) - Configuration consolidation architecture decision
+- [ADR-022](ADR-022-deployment-mode-consolidation.md) - Deployment mode consolidation
