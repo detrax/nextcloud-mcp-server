@@ -49,8 +49,11 @@ body:
     attributes:
       label: Logs and error output
       description: |
-        Include the full error message / stack trace from the MCP server, and any relevant entries from
-        `docker compose exec app cat /var/www/html/data/nextcloud.log | jq | tail` (Nextcloud side).
+        Include the full error message / stack trace from the MCP server.
+        If running with Docker, also include any relevant entries from
+        `docker compose exec app cat /var/www/html/data/nextcloud.log | jq | tail`
+        (Nextcloud side). For other install methods, attach the equivalent
+        Nextcloud log excerpt if available.
         Redact tokens, passwords, and personal data.
       render: shell
     validations:

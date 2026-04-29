@@ -51,6 +51,6 @@ body:
         - Login Flow v2
         - OAuth / OIDC (Nextcloud user_oidc)
         - OAuth / OIDC (external IdP, e.g. Keycloak)
-        - Not yet decided
+        - Other / not sure
     validations:
       required: true

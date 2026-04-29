@@ -27,4 +27,4 @@ Whichever channel you use, please include as much of the following as you can to
 - The version(s) of the project affected
 - Any known mitigations or workarounds
 
-We will acknowledge receipt and work with you on coordinated disclosure.
+We aim to acknowledge within 5 business days and provide a fix or mitigation timeline within 30 days, and will work with you on coordinated disclosure.
