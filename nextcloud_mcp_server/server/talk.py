@@ -27,8 +27,10 @@ _MESSAGE_MAX_LENGTH = 32000
 
 
 def _validate_message_text(message: str) -> None:
-    if not message:
-        raise ValueError("Message text must not be empty")
+    # Reject both empty strings and whitespace-only strings — spreed
+    # would happily post the latter as a visually-blank message.
+    if not message or not message.strip():
+        raise ValueError("Message text must not be empty or whitespace-only")
     if len(message) > _MESSAGE_MAX_LENGTH:
         raise ValueError(
             f"Message too long: {len(message)} characters (max {_MESSAGE_MAX_LENGTH})"

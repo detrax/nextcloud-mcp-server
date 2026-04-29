@@ -5,7 +5,7 @@ import logging
 import httpx
 import pytest
 
-from nextcloud_mcp_server.client.talk import TalkClient
+from nextcloud_mcp_server.client.talk import TalkClient, _validate_token
 from nextcloud_mcp_server.models.talk import (
     TalkConversation,
     TalkMessage,
@@ -20,6 +20,44 @@ from tests.client.conftest import (
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.unit
+
+
+# Token validation
+
+
+@pytest.mark.parametrize(
+    "bad_token",
+    [
+        "",
+        "../foo",
+        "a/b",
+        "a b",
+        "a.b",
+        "a-b",
+        "token!",
+    ],
+)
+def test_validate_token_rejects_invalid(bad_token):
+    """_validate_token rejects anything outside the alphanumeric whitelist."""
+    with pytest.raises(ValueError, match="Invalid Talk conversation token"):
+        _validate_token(bad_token)
+
+
+@pytest.mark.parametrize("good_token", ["a1b2c3d4", "ABC123", "abcdef", "1"])
+def test_validate_token_accepts_valid(good_token):
+    """Real spreed tokens — short alphanumeric strings — pass through."""
+    _validate_token(good_token)
+
+
+async def test_talk_get_conversation_rejects_path_traversal(mocker):
+    """Pathological tokens never reach the HTTP layer."""
+    mock_make_request = mocker.patch.object(TalkClient, "_make_request")
+
+    client = TalkClient(mocker.AsyncMock(spec=httpx.AsyncClient), "testuser")
+    with pytest.raises(ValueError, match="Invalid Talk conversation token"):
+        await client.get_conversation("../etc/passwd")
+
+    mock_make_request.assert_not_called()
 
 
 # Conversation tests
@@ -64,7 +102,7 @@ async def test_talk_list_conversations(mocker):
     assert len(rooms) == 2
     assert all(isinstance(r, TalkConversation) for r in rooms)
     assert rooms[0].token == "abc"
-    assert rooms[1].type == 3
+    assert rooms[1].room_type == 3
 
     mock_make_request.assert_called_once()
     call_args = mock_make_request.call_args
@@ -89,7 +127,7 @@ async def test_talk_list_conversations_with_modified_since(mocker):
 
     params = mock_make_request.call_args[1]["params"]
     assert params["modifiedSince"] == 1700000000
-    assert params["includeStatus"] == "true"
+    assert params["includeStatus"] == 1
 
 
 async def test_talk_get_conversation(mocker):
@@ -322,7 +360,7 @@ async def test_talk_send_message_with_reference_id_and_reply(mocker):
 
 
 async def test_talk_mark_as_read_no_message(mocker):
-    """mark_as_read with no message ID sends an empty body."""
+    """mark_as_read with no message ID sends no body (json=None)."""
     mock_response = create_mock_response(
         status_code=200,
         json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
@@ -337,7 +375,9 @@ async def test_talk_mark_as_read_no_message(mocker):
     call_args = mock_make_request.call_args
     assert call_args[0][0] == "POST"
     assert "/chat/abc/read" in call_args[0][1]
-    assert call_args[1]["json"] == {}
+    # Empty body is sent as ``json=None`` so httpx skips both the body and
+    # the ``Content-Type: application/json`` header for this bodyless POST.
+    assert call_args[1]["json"] is None
 
 
 async def test_talk_mark_as_read_with_message(mocker):
@@ -409,7 +449,7 @@ async def test_talk_list_participants(mocker):
 
 
 async def test_talk_list_participants_with_include_status(mocker):
-    """include_status=True forwards includeStatus=true as a query param."""
+    """include_status=True forwards includeStatus=1 as a query param."""
     mock_response = create_mock_response(
         status_code=200,
         json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
@@ -422,4 +462,4 @@ async def test_talk_list_participants_with_include_status(mocker):
     await client.list_participants("abc", include_status=True)
 
     params = mock_make_request.call_args[1]["params"]
-    assert params["includeStatus"] == "true"
+    assert params["includeStatus"] == 1

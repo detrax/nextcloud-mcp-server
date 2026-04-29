@@ -12,6 +12,7 @@ application/json`` is sent.
 """
 
 import logging
+import re
 from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
@@ -22,6 +23,18 @@ from nextcloud_mcp_server.models.talk import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Spreed conversation tokens are short alphanumeric strings (e.g. "a1b2c3d4").
+# httpx does not normalise path traversal sequences, so a pathological token
+# like ``"../foo"`` would be sent verbatim. Validate up-front for clearer
+# errors and defence-in-depth.
+_TALK_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
+
+
+def _validate_token(token: str) -> None:
+    if not _TALK_TOKEN_RE.fullmatch(token):
+        raise ValueError(f"Invalid Talk conversation token: {token!r}")
 
 
 class TalkClient(BaseNextcloudClient):
@@ -68,7 +81,7 @@ class TalkClient(BaseNextcloudClient):
         if modified_since is not None:
             params["modifiedSince"] = modified_since
         if include_status:
-            params["includeStatus"] = "true"
+            params["includeStatus"] = 1
         if no_status_update:
             params["noStatusUpdate"] = 1
         response = await self._make_request(
@@ -79,6 +92,7 @@ class TalkClient(BaseNextcloudClient):
 
     async def get_conversation(self, token: str) -> TalkConversation:
         """Fetch a single Talk conversation by its room token."""
+        _validate_token(token)
         response = await self._make_request(
             "GET", f"{self._ROOM_BASE}/{token}", headers=self._talk_headers()
         )
@@ -112,6 +126,7 @@ class TalkClient(BaseNextcloudClient):
 
     async def delete_conversation(self, token: str) -> None:
         """Delete a conversation. Used by integration test cleanup."""
+        _validate_token(token)
         await self._make_request(
             "DELETE", f"{self._ROOM_BASE}/{token}", headers=self._talk_headers()
         )
@@ -154,6 +169,7 @@ class TalkClient(BaseNextcloudClient):
             if the header was absent or unparseable), suitable for
             pagination.
         """
+        _validate_token(token)
         clamped_limit = min(max(1, limit), 200)
         params: dict[str, Any] = {
             "limit": clamped_limit,
@@ -208,6 +224,7 @@ class TalkClient(BaseNextcloudClient):
             silent: When True, the message is delivered without push
                 notifications.
         """
+        _validate_token(token)
         body: dict[str, Any] = {"message": message}
         if reply_to is not None:
             body["replyTo"] = reply_to
@@ -232,13 +249,17 @@ class TalkClient(BaseNextcloudClient):
         that message; otherwise spreed marks everything currently in the
         room as read.
         """
+        _validate_token(token)
         body: dict[str, Any] = {}
         if last_read_message is not None:
             body["lastReadMessage"] = last_read_message
+        # ``json=None`` makes httpx skip both the body and the
+        # ``Content-Type: application/json`` header — semantically correct
+        # for the bodyless "mark everything as read" call.
         await self._make_request(
             "POST",
             f"{self._CHAT_BASE}/{token}/read",
-            json=body,
+            json=body or None,
             headers=self._talk_headers(),
         )
 
@@ -248,9 +269,10 @@ class TalkClient(BaseNextcloudClient):
         self, token: str, *, include_status: bool = False
     ) -> list[TalkParticipant]:
         """List participants of a Talk conversation."""
+        _validate_token(token)
         params: dict[str, Any] = {}
         if include_status:
-            params["includeStatus"] = "true"
+            params["includeStatus"] = 1
         response = await self._make_request(
             "GET",
             f"{self._ROOM_BASE}/{token}/participants",

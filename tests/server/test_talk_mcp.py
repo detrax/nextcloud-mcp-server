@@ -131,16 +131,21 @@ async def test_talk_list_participants(
     assert len(actor_ids) >= 1
 
 
-async def test_talk_send_message_validation_empty_text(
-    nc_mcp_client: ClientSession, temporary_conversation: dict
+@pytest.mark.parametrize("blank_text", ["", "   ", "\t\n", " \t \n "])
+async def test_talk_send_message_validation_blank_text(
+    nc_mcp_client: ClientSession,
+    temporary_conversation: dict,
+    blank_text: str,
 ):
-    """Empty message text is rejected client-side."""
+    """Empty and whitespace-only message text are rejected client-side."""
     token = temporary_conversation["token"]
 
     result = await nc_mcp_client.call_tool(
-        "talk_send_message", {"token": token, "message": ""}
+        "talk_send_message", {"token": token, "message": blank_text}
     )
-    assert result.isError is True, "Expected validation error for empty message"
+    assert result.isError is True, (
+        f"Expected validation error for blank message {blank_text!r}"
+    )
 
 
 async def test_talk_send_message_validation_too_long(

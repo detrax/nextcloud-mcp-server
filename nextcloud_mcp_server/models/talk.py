@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .base import BaseResponse, StatusResponse
 
@@ -48,9 +48,25 @@ class TalkConversation(BaseModel):
     flows.
     """
 
+    # ``populate_by_name=True`` lets us deserialize spreed's ``type`` key
+    # into the ``room_type`` field while still allowing internal callers
+    # to construct the model with ``room_type=...`` directly.
+    model_config = ConfigDict(populate_by_name=True)
+
     id: int
     token: str
-    type: int
+    # The spreed JSON wire format uses ``type`` for the room kind, but
+    # ``type`` shadows Python's builtin within the class scope, which
+    # would silently call this int field if anyone wrote ``type(...)``
+    # in a validator or method on this model. Map to ``room_type`` and
+    # alias the wire field instead.
+    room_type: int = Field(
+        alias="type",
+        description=(
+            "Conversation kind: 1=one-to-one, 2=group, 3=public, "
+            "4=changelog, 5=former one-to-one, 6=note-to-self."
+        ),
+    )
     name: str
     displayName: str
     description: str = ""
