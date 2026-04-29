@@ -475,6 +475,96 @@ async def test_deck_update_comment(mocker):
     assert comment.message == "Updated comment"
 
     mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "PUT"
+    assert "/cards/789/comments/222" in call_args[0][1]
+    assert call_args[1]["json"] == {"message": "Updated comment"}
+
+
+async def test_deck_create_comment_reply(mocker):
+    """Test that create_comment forwards parent_id when replying."""
+    mock_response = create_mock_deck_comment_response(
+        comment_id=333, message="A reply", card_id=789
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    comment = await client.create_comment(card_id=789, message="A reply", parent_id=222)
+
+    assert isinstance(comment, DeckComment)
+    assert comment.id == 333
+
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "POST"
+    assert "/cards/789/comments" in call_args[0][1]
+    assert call_args[1]["json"] == {"message": "A reply", "parentId": 222}
+
+
+async def test_deck_create_comment_omits_parent_id_when_none(mocker):
+    """Test that create_comment does not send parentId when not given."""
+    mock_response = create_mock_deck_comment_response(
+        comment_id=444, message="Top-level", card_id=789
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    await client.create_comment(card_id=789, message="Top-level")
+
+    call_args = mock_make_request.call_args
+    assert call_args[1]["json"] == {"message": "Top-level"}
+    assert "parentId" not in call_args[1]["json"]
+
+
+async def test_deck_delete_comment(mocker):
+    """Test that delete_comment makes the correct API call."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    result = await client.delete_comment(card_id=789, comment_id=222)
+
+    assert result is None
+    mock_make_request.assert_called_once()
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "DELETE"
+    assert "/cards/789/comments/222" in call_args[0][1]
+
+
+async def test_deck_get_comments_pagination(mocker):
+    """Test that get_comments forwards limit and offset as query params."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data={"ocs": {"meta": {"status": "ok"}, "data": []}},
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    await client.get_comments(card_id=789, limit=50, offset=100)
+
+    call_args = mock_make_request.call_args
+    assert call_args[0][0] == "GET"
+    assert "/cards/789/comments" in call_args[0][1]
+    assert call_args[1]["params"] == {"limit": 50, "offset": 100}
 
 
 # Config Test

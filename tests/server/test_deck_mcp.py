@@ -221,3 +221,135 @@ async def test_deck_workflow_integration_mcp(
     # 3. Verify board data matches via resource (already done in step 1)
     logger.info(f"Board data verification completed for board: {board_id}")
     logger.info("Board structure and data verified successfully")
+
+
+# Card Comment Tests
+
+
+async def test_deck_card_comment_crud_workflow_mcp(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    temporary_board_with_card: tuple,
+):
+    """Full CRUD lifecycle for card comments via MCP tools."""
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    # 1. Create a top-level comment via MCP
+    create_result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": "Initial comment"},
+    )
+    assert create_result.isError is False, (
+        f"Comment creation failed: {create_result.content}"
+    )
+    create_response = json.loads(create_result.content[0].text)
+    assert create_response["success"] is True
+    comment = create_response["comment"]
+    comment_id = comment["id"]
+    assert comment["objectId"] == card_id
+    assert comment["message"] == "Initial comment"
+    assert comment["replyTo"] is None
+    logger.info(f"Created comment ID {comment_id} on card {card_id}")
+
+    # 2. List comments via MCP — verify the new comment is present
+    list_result = await nc_mcp_client.call_tool(
+        "deck_get_card_comments", {"card_id": card_id}
+    )
+    assert list_result.isError is False, f"List comments failed: {list_result.content}"
+    listed = json.loads(list_result.content[0].text)
+    assert listed["count"] >= 1
+    listed_ids = [c["id"] for c in listed["results"]]
+    assert comment_id in listed_ids, "Created comment not in list"
+
+    # 3. Cross-check via direct client
+    direct_comments = await nc_client.deck.get_comments(card_id)
+    direct_ids = [c.id for c in direct_comments]
+    assert comment_id in direct_ids, "Created comment not visible via direct client"
+
+    # 4. Update the comment via MCP
+    update_result = await nc_mcp_client.call_tool(
+        "deck_update_card_comment",
+        {
+            "card_id": card_id,
+            "comment_id": comment_id,
+            "message": "Edited comment",
+        },
+    )
+    assert update_result.isError is False, (
+        f"Comment update failed: {update_result.content}"
+    )
+    update_response = json.loads(update_result.content[0].text)
+    updated = update_response["comment"]
+    assert updated["id"] == comment_id
+    assert updated["message"] == "Edited comment"
+
+    # 5. Delete the comment via MCP
+    delete_result = await nc_mcp_client.call_tool(
+        "deck_delete_card_comment",
+        {"card_id": card_id, "comment_id": comment_id},
+    )
+    assert delete_result.isError is False, (
+        f"Comment delete failed: {delete_result.content}"
+    )
+    delete_response = json.loads(delete_result.content[0].text)
+    assert delete_response["success"] is True
+    assert delete_response["card_id"] == card_id
+    assert delete_response["comment_id"] == comment_id
+
+    # 6. Verify the comment is gone
+    final_list_result = await nc_mcp_client.call_tool(
+        "deck_get_card_comments", {"card_id": card_id}
+    )
+    final_listed = json.loads(final_list_result.content[0].text)
+    final_ids = [c["id"] for c in final_listed["results"]]
+    assert comment_id not in final_ids, "Comment still present after delete"
+
+
+async def test_deck_card_comment_reply_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """Replying with parent_id populates replyTo on the new comment."""
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    # Create the parent comment
+    parent_result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": "Parent message"},
+    )
+    assert parent_result.isError is False
+    parent = json.loads(parent_result.content[0].text)["comment"]
+    parent_id = parent["id"]
+
+    # Create a reply
+    reply_result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {
+            "card_id": card_id,
+            "message": "Reply message",
+            "parent_id": parent_id,
+        },
+    )
+    assert reply_result.isError is False, f"Reply failed: {reply_result.content}"
+    reply = json.loads(reply_result.content[0].text)["comment"]
+
+    assert reply["message"] == "Reply message"
+    assert reply["replyTo"] is not None, "replyTo should be populated for replies"
+    assert reply["replyTo"]["id"] == parent_id
+    assert reply["replyTo"]["message"] == "Parent message"
+
+
+async def test_deck_card_comment_message_too_long_mcp(
+    nc_mcp_client: ClientSession, temporary_board_with_card: tuple
+):
+    """Creating a comment longer than 1000 chars is rejected client-side."""
+    _, _, card_data = temporary_board_with_card
+    card_id = card_data["id"]
+
+    too_long = "x" * 1001
+    result = await nc_mcp_client.call_tool(
+        "deck_create_card_comment",
+        {"card_id": card_id, "message": too_long},
+    )
+    assert result.isError is True, "Expected validation error for >1000 char message"
