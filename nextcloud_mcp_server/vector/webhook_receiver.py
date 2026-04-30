@@ -60,6 +60,13 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
         # for differing lengths but isn't fully constant-time across them;
         # that's fine here — a secret length leak is not a sensitive signal.
         if not hmac.compare_digest(provided, expected):
+            # Intentionally omit WWW-Authenticate. RFC 7235 §4.1 says a 401
+            # SHOULD carry it, but Nextcloud's webhook delivery worker has no
+            # auth-flow state machine to negotiate against — the bearer is a
+            # static shared secret configured out-of-band via WEBHOOK_SECRET,
+            # and a challenge response wouldn't change client behaviour.
+            # Surfacing it would only mislead operators into expecting a
+            # renegotiation that doesn't exist.
             logger.warning("Webhook rejected: missing or invalid Authorization header")
             return JSONResponse(
                 {"status": "unauthorized"},

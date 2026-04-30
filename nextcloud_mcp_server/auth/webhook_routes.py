@@ -394,7 +394,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
         <div class="info-message">
             <p><strong>About Webhooks</strong></p>
             <p>Webhooks enable real-time synchronization by notifying this server when content changes in Nextcloud.</p>
-            <p><strong>Endpoint:</strong> <code>{webhook_uri}</code></p>
+            <p><strong>Endpoint:</strong> <code>{html.escape(webhook_uri)}</code></p>
         </div>
 
         <h3 style="margin-top: 30px;">Available Presets</h3>
