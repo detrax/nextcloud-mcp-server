@@ -52,12 +52,13 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     """
     secret = get_settings().webhook_secret
     if secret:
-        provided = request.headers.get("authorization", "")
-        expected = f"Bearer {secret}"
+        provided = request.headers.get("authorization", "").encode("utf-8")
+        expected = f"Bearer {secret}".encode("utf-8")
         # Use compare_digest to avoid the character-by-character short-circuit
-        # of `==`. compare_digest still returns False for differing lengths
-        # but isn't fully constant-time across them; that's fine here — a
-        # secret length leak is not a sensitive signal.
+        # of `==`. Comparing as bytes is the conventional form and avoids any
+        # surprise with non-ASCII input. compare_digest still returns False
+        # for differing lengths but isn't fully constant-time across them;
+        # that's fine here — a secret length leak is not a sensitive signal.
         if not hmac.compare_digest(provided, expected):
             logger.warning("Webhook rejected: missing or invalid Authorization header")
             return JSONResponse(

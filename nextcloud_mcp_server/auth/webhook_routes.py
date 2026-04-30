@@ -4,6 +4,7 @@ Provides browser-based endpoints for admin users to manage webhook configuration
 using preset templates. Only accessible to Nextcloud administrators.
 """
 
+import html
 import logging
 import os
 
@@ -411,7 +412,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
             content=f"""
             <div class="warning">
                 <p><strong>Error Loading Webhooks</strong></p>
-                <p>{str(e)}</p>
+                <p>{html.escape(str(e))}</p>
             </div>
             """,
             status_code=500,
@@ -447,7 +448,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         preset = get_preset(preset_id)
         if not preset:
             return HTMLResponse(
-                content=f'<div class="warning">Unknown preset: {preset_id}</div>',
+                content=f'<div class="warning">Unknown preset: {html.escape(preset_id)}</div>',
                 status_code=404,
             )
 
@@ -500,7 +501,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
     except Exception as e:
         logger.error("Failed to enable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
-            content=f'<div class="warning">Failed to enable preset: {str(e)}</div>',
+            content=f'<div class="warning">Failed to enable preset: {html.escape(str(e))}</div>',
             status_code=500,
         )
 
@@ -534,7 +535,7 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
         preset = get_preset(preset_id)
         if not preset:
             return HTMLResponse(
-                content=f'<div class="warning">Unknown preset: {preset_id}</div>',
+                content=f'<div class="warning">Unknown preset: {html.escape(preset_id)}</div>',
                 status_code=404,
             )
 
@@ -592,6 +593,6 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
     except Exception as e:
         logger.error("Failed to disable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
-            content=f'<div class="warning">Failed to disable preset: {str(e)}</div>',
+            content=f'<div class="warning">Failed to disable preset: {html.escape(str(e))}</div>',
             status_code=500,
         )

@@ -272,3 +272,28 @@ def test_secret_unset_accepts_unauthenticated(monkeypatch):
 
     assert response.status_code == 200
     assert receive_stream.receive_nowait().doc_id == "437"
+
+
+def test_compare_digest_is_called_with_bytes(monkeypatch, mocker):
+    """Regression: secret comparison must run on bytes, not strings, so
+    that future non-ASCII secret support doesn't depend on Python's
+    implicit ASCII encoding."""
+    _patch_secret(monkeypatch, "supersecret")
+    spy = mocker.spy(webhook_receiver.hmac, "compare_digest")
+
+    send_stream, _receive = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/nextcloud",
+            json=_NOTE_CREATED,
+            headers={"Authorization": "Bearer supersecret"},
+        )
+
+    assert response.status_code == 200
+    assert spy.call_count == 1
+    provided_arg, expected_arg = spy.call_args.args
+    assert isinstance(provided_arg, bytes)
+    assert isinstance(expected_arg, bytes)
+    assert expected_arg == b"Bearer supersecret"
