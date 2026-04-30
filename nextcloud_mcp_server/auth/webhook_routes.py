@@ -72,7 +72,7 @@ async def _get_installed_apps(http_client: httpx.AsyncClient) -> list[str]:
         app_keys = set(capabilities.keys()) - core_keys
         return sorted(app_keys)
     except Exception as e:
-        logger.warning(f"Failed to get installed apps from capabilities: {e}")
+        logger.warning("Failed to get installed apps from capabilities: %s", e)
         return []
 
 
@@ -81,10 +81,10 @@ def _get_webhook_uri() -> str:
 
     Priority (highest first):
       1. ``WEBHOOK_INTERNAL_URL`` — explicit override, e.g. for split
-         internal/external URLs.
-      2. ``NEXTCLOUD_MCP_SERVER_URL`` — the configured public URL. This is
-         set on cloud deployments (ECS, k8s) and is the URL Nextcloud must
-         POST to.
+         internal/external URLs (read via dynaconf, so env vars and
+         settings.toml both work).
+      2. ``NEXTCLOUD_MCP_SERVER_URL`` — the configured public URL set on
+         cloud deployments (ECS, k8s); the URL NC must POST to.
       3. ``/.dockerenv`` (or podman / ``DOCKER_CONTAINER=true``) → internal
          docker-compose service name. Only relevant when no public URL is
          configured — i.e. local dev where MCP and NC share a Docker
@@ -96,14 +96,16 @@ def _get_webhook_uri() -> str:
     docker-compose hostname (e.g. ``http://mcp:8000``) that NC cannot
     resolve, dropping every webhook delivery.
     """
-    webhook_url = os.getenv("WEBHOOK_INTERNAL_URL")
-    if webhook_url:
-        return f"{webhook_url}/webhooks/nextcloud"
+    settings = get_settings()
+    if settings.webhook_internal_url:
+        return f"{settings.webhook_internal_url}/webhooks/nextcloud"
 
-    server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
-    if server_url:
-        return f"{server_url}/webhooks/nextcloud"
+    if settings.nextcloud_mcp_server_url:
+        return f"{settings.nextcloud_mcp_server_url}/webhooks/nextcloud"
 
+    # Docker-environment markers stay on os.getenv: they're container-runtime
+    # signals (filesystem markers, optional service-name override) rather
+    # than user-facing config that would belong in settings.toml.
     is_docker = (
         os.path.exists("/.dockerenv")
         or os.path.exists("/run/.containerenv")
@@ -284,7 +286,7 @@ async def _get_enabled_presets(
         return enabled_presets
 
     except Exception as e:
-        logger.error(f"Failed to list webhooks: {e}")
+        logger.error("Failed to list webhooks: %s", e)
         return {}
 
 
@@ -329,7 +331,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
 
         # Get installed apps to filter presets
         installed_apps = await _get_installed_apps(http_client)
-        logger.debug(f"Installed apps: {installed_apps}")
+        logger.debug("Installed apps: %s", installed_apps)
 
         # Get currently enabled presets (from database or API)
         enabled_presets = await _get_enabled_presets(webhooks_client, storage)
@@ -404,7 +406,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
         return HTMLResponse(content=html_content)
 
     except Exception as e:
-        logger.error(f"Error loading webhook management pane: {e}", exc_info=True)
+        logger.error("Error loading webhook management pane: %s", e, exc_info=True)
         return HTMLResponse(
             content=f"""
             <div class="warning">
@@ -462,7 +464,9 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
             for webhook_id in registered_ids:
                 await storage.store_webhook(webhook_id, preset_id)
             logger.info(
-                f"Persisted {len(registered_ids)} webhook(s) for preset '{preset_id}' to database"
+                "Persisted %d webhook(s) for preset '%s' to database",
+                len(registered_ids),
+                preset_id,
             )
 
         # Return updated card
@@ -494,7 +498,7 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error(f"Failed to enable preset {preset_id}: {e}", exc_info=True)
+        logger.error("Failed to enable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
             content=f'<div class="warning">Failed to enable preset: {str(e)}</div>',
             status_code=500,
@@ -548,13 +552,15 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
 
         for webhook_id in webhook_ids:
             await webhooks_client.delete_webhook(webhook_id)
-            logger.info(f"Deleted webhook {webhook_id} from preset {preset_id}")
+            logger.info("Deleted webhook %s from preset %s", webhook_id, preset_id)
 
         # Remove from database
         if storage:
             deleted_count = await storage.clear_preset_webhooks(preset_id)
             logger.info(
-                f"Removed {deleted_count} webhook(s) for preset '{preset_id}' from database"
+                "Removed %d webhook(s) for preset '%s' from database",
+                deleted_count,
+                preset_id,
             )
 
         # Return updated card
@@ -584,7 +590,7 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error(f"Failed to disable preset {preset_id}: {e}", exc_info=True)
+        logger.error("Failed to disable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
             content=f'<div class="warning">Failed to disable preset: {str(e)}</div>',
             status_code=500,

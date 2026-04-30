@@ -8,6 +8,7 @@ in :mod:`nextcloud_mcp_server.app`.
 import hmac
 import logging
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -53,9 +54,10 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     if secret:
         provided = request.headers.get("authorization", "")
         expected = f"Bearer {secret}"
-        # Always run compare_digest so the constant-time path is taken even
-        # when the header is missing — `compare_digest("", expected)` returns
-        # False without leaking length information.
+        # Use compare_digest to avoid the character-by-character short-circuit
+        # of `==`. compare_digest still returns False for differing lengths
+        # but isn't fully constant-time across them; that's fine here — a
+        # secret length leak is not a sensitive signal.
         if not hmac.compare_digest(provided, expected):
             logger.warning("Webhook rejected: missing or invalid Authorization header")
             return JSONResponse(
@@ -94,7 +96,21 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
         )
 
     try:
-        await send_stream.send(task)
+        with anyio.fail_after(1.0):
+            await send_stream.send(task)
+    except TimeoutError:
+        # Queue is saturated (default 10 000 tasks). Returning 503 lets NC
+        # retry rather than pinning this handler until its outbound timeout
+        # fires; the queue-pressure signal also surfaces in metrics.
+        logger.warning(
+            "Webhook task drop: queue full for %s_%s",
+            task.doc_type,
+            task.doc_id,
+        )
+        return JSONResponse(
+            {"status": "unavailable", "reason": "queue full"},
+            status_code=503,
+        )
     except Exception as e:
         logger.error(
             "Failed to queue webhook task for %s_%s: %s",

@@ -1,6 +1,6 @@
 """Client for Nextcloud Webhook Listeners API operations."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from nextcloud_mcp_server.client.base import BaseNextcloudClient
 
@@ -11,15 +11,15 @@ class WebhooksClient(BaseNextcloudClient):
     app_name = "webhooks"
 
     def _get_webhook_headers(
-        self, additional_headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+        self, additional_headers: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """Get standard headers required for Webhook Listeners API calls."""
         headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
         if additional_headers:
             headers.update(additional_headers)
         return headers
 
-    async def list_webhooks(self) -> List[Dict[str, Any]]:
+    async def list_webhooks(self) -> list[dict[str, Any]]:
         """List all registered webhooks for the current user.
 
         Returns:
@@ -40,10 +40,10 @@ class WebhooksClient(BaseNextcloudClient):
         uri: str,
         http_method: str = "POST",
         auth_method: str = "none",
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         auth_data: dict[str, str] | None = None,
-        event_filter: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        event_filter: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Register a new webhook for the specified event.
 
         Args:
@@ -63,7 +63,7 @@ class WebhooksClient(BaseNextcloudClient):
         Returns:
             Webhook registration details including webhook ID
         """
-        data: Dict[str, Any] = {
+        data: dict[str, Any] = {
             "httpMethod": http_method,
             "uri": uri,
             "event": event,
@@ -101,7 +101,7 @@ class WebhooksClient(BaseNextcloudClient):
             headers=headers,
         )
 
-    async def get_webhook(self, webhook_id: int) -> Dict[str, Any]:
+    async def get_webhook(self, webhook_id: int) -> dict[str, Any]:
         """Get details of a specific webhook registration.
 
         Args:

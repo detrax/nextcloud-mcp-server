@@ -165,6 +165,33 @@ def test_returns_500_when_stream_is_closed():
     assert response.json()["status"] == "error"
 
 
+def test_returns_503_when_queue_is_full(monkeypatch):
+    """When the processor queue is saturated, the handler must time out
+    quickly with 503 instead of pinning until NC's outbound timeout fires."""
+    # Speed up the test — a 1s deadline matches production but is overkill
+    # for a unit test that's specifically exercising the timeout branch.
+    # Capture the original BEFORE patching so the override doesn't recurse
+    # into itself (the receiver imports the same anyio module object).
+    real_fail_after = anyio.fail_after
+    monkeypatch.setattr(
+        "nextcloud_mcp_server.vector.webhook_receiver.anyio.fail_after",
+        lambda _seconds: real_fail_after(0.05),
+    )
+
+    # Buffer of 1, no consumer → first send fills it, second blocks.
+    send_stream, _receive_stream = anyio.create_memory_object_stream(max_buffer_size=1)
+    send_stream.send_nowait("sentinel")  # type: ignore[arg-type]
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "unavailable"
+    assert body["reason"] == "queue full"
+
+
 # --- WEBHOOK_SECRET authentication ---------------------------------------
 
 
