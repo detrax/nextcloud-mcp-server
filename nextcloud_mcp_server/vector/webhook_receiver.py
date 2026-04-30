@@ -53,7 +53,10 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     if secret:
         provided = request.headers.get("authorization", "")
         expected = f"Bearer {secret}"
-        if not provided or not hmac.compare_digest(provided, expected):
+        # Always run compare_digest so the constant-time path is taken even
+        # when the header is missing — `compare_digest("", expected)` returns
+        # False without leaking length information.
+        if not hmac.compare_digest(provided, expected):
             logger.warning("Webhook rejected: missing or invalid Authorization header")
             return JSONResponse(
                 {"status": "unauthorized"},

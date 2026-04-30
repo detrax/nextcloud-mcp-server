@@ -17,6 +17,7 @@ from nextcloud_mcp_server.client.webhooks import WebhooksClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.server.webhook_presets import (
     WEBHOOK_PRESETS,
+    WebhookPreset,
     filter_presets_by_installed_apps,
     get_preset,
 )
@@ -137,6 +138,38 @@ def webhook_auth_pair() -> tuple[str, dict[str, str] | None]:
     if not secret:
         return ("none", None)
     return ("header", {"Authorization": f"Bearer {secret}"})
+
+
+async def _register_preset_webhooks(
+    webhooks_client: WebhooksClient,
+    preset: WebhookPreset,
+    webhook_uri: str,
+) -> list[int]:
+    """Register every event in a preset against a single MCP webhook URI.
+
+    Threads the resolved ``(auth_method, auth_data)`` from
+    :func:`webhook_auth_pair` onto each registration call so deliveries
+    carry the configured ``Authorization`` header (when ``WEBHOOK_SECRET``
+    is set) or fall through to ``authMethod="none"`` (backward-compatible
+    when it's not).
+
+    Extracted from :func:`enable_webhook_preset` so the auth-threading
+    behaviour is testable without standing up a Starlette app.
+    """
+    auth_method, auth_data = webhook_auth_pair()
+    registered_ids: list[int] = []
+    for event_config in preset["events"]:
+        webhook_data = await webhooks_client.create_webhook(
+            event=event_config["event"],
+            uri=webhook_uri,
+            event_filter=event_config["filter"] if event_config["filter"] else None,
+            auth_method=auth_method,
+            auth_data=auth_data,
+        )
+        webhook_id = webhook_data["id"]
+        registered_ids.append(webhook_id)
+        logger.info("Registered webhook %s for %s", webhook_id, event_config["event"])
+    return registered_ids
 
 
 async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:
@@ -419,20 +452,9 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         # Register webhooks
         webhooks_client = WebhooksClient(http_client, username)
         webhook_uri = _get_webhook_uri()
-        registered_ids = []
-
-        auth_method, auth_data = webhook_auth_pair()
-        for event_config in preset["events"]:
-            webhook_data = await webhooks_client.create_webhook(
-                event=event_config["event"],
-                uri=webhook_uri,
-                event_filter=event_config["filter"] if event_config["filter"] else None,
-                auth_method=auth_method,
-                auth_data=auth_data,
-            )
-            webhook_id = webhook_data["id"]
-            registered_ids.append(webhook_id)
-            logger.info(f"Registered webhook {webhook_id} for {event_config['event']}")
+        registered_ids = await _register_preset_webhooks(
+            webhooks_client, preset, webhook_uri
+        )
 
         # Persist webhook IDs to database
         storage = _get_storage(request)

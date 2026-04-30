@@ -41,7 +41,7 @@ class WebhooksClient(BaseNextcloudClient):
         http_method: str = "POST",
         auth_method: str = "none",
         headers: Optional[Dict[str, str]] = None,
-        auth_data: Optional[Dict[str, str]] = None,
+        auth_data: dict[str, str] | None = None,
         event_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Register a new webhook for the specified event.
