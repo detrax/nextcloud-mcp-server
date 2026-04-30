@@ -5,14 +5,36 @@ The receiver is registered as a Starlette route at ``/webhooks/nextcloud``
 in :mod:`nextcloud_mcp_server.app`.
 """
 
+import hmac
 import logging
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.webhook_parser import extract_document_task
 
 logger = logging.getLogger(__name__)
+
+_warned_about_missing_secret = False
+
+
+def _warn_missing_secret_once() -> None:
+    """Log a one-time WARNING when WEBHOOK_SECRET is unset.
+
+    The receiver still accepts unauthenticated POSTs in this case so existing
+    deployments keep working, but the operator should know they're running
+    without webhook auth.
+    """
+    global _warned_about_missing_secret
+    if _warned_about_missing_secret:
+        return
+    _warned_about_missing_secret = True
+    logger.warning(
+        "WEBHOOK_SECRET is not set; /webhooks/nextcloud accepts "
+        "unauthenticated requests. Set WEBHOOK_SECRET and re-register "
+        "webhooks to enable Authorization: Bearer validation."
+    )
 
 
 async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
@@ -21,11 +43,29 @@ async def handle_nextcloud_webhook(request: Request) -> JSONResponse:
     Returns quickly so NC's webhook worker is not blocked. The send-stream is
     read from ``request.app.state.document_send_stream``; when vector sync
     isn't running we return 503 so NC retries delivery.
+
+    When ``WEBHOOK_SECRET`` is set, the request must carry
+    ``Authorization: Bearer <secret>`` (registered via ``authData`` so NC
+    forwards it on every delivery); requests without a valid header are
+    rejected with 401 before any further work.
     """
+    secret = get_settings().webhook_secret
+    if secret:
+        provided = request.headers.get("authorization", "")
+        expected = f"Bearer {secret}"
+        if not provided or not hmac.compare_digest(provided, expected):
+            logger.warning("Webhook rejected: missing or invalid Authorization header")
+            return JSONResponse(
+                {"status": "unauthorized"},
+                status_code=401,
+            )
+    else:
+        _warn_missing_secret_once()
+
     try:
         payload = await request.json()
     except Exception as e:
-        logger.warning(f"Webhook payload was not valid JSON: {e}")
+        logger.warning("Webhook payload was not valid JSON: %s", e)
         return JSONResponse(
             {"status": "error", "message": "invalid JSON"},
             status_code=400,

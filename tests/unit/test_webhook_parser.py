@@ -186,3 +186,33 @@ def test_missing_user_field_returns_none():
 @pytest.mark.unit
 def test_empty_payload_returns_none():
     assert extract_document_task({}) is None
+
+
+@pytest.mark.unit
+def test_non_numeric_time_field_returns_none():
+    """A malformed ``time`` field must not raise ValueError out of the parser."""
+    payload = {
+        "user": {"uid": "admin"},
+        "time": "not-a-number",
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
+        },
+    }
+
+    assert extract_document_task(payload) is None
+
+
+@pytest.mark.unit
+def test_missing_time_field_defaults_to_zero():
+    payload = {
+        "user": {"uid": "admin"},
+        "event": {
+            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
+        },
+    }
+
+    task = extract_document_task(payload)
+    assert task is not None
+    assert task.modified_at == 0

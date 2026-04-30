@@ -14,6 +14,7 @@ from starlette.responses import HTMLResponse
 
 from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.server.webhook_presets import (
     WEBHOOK_PRESETS,
     filter_presets_by_installed_apps,
@@ -111,11 +112,31 @@ def _get_webhook_uri() -> str:
         service_name = os.getenv("NEXTCLOUD_MCP_SERVICE_NAME", "mcp")
         port = os.getenv("NEXTCLOUD_MCP_PORT", "8000")
         logger.debug(
-            f"Docker environment detected, using internal URL: http://{service_name}:{port}"
+            "Docker environment detected, using internal URL: http://%s:%s",
+            service_name,
+            port,
         )
         return f"http://{service_name}:{port}/webhooks/nextcloud"
 
     return "http://localhost:8000/webhooks/nextcloud"
+
+
+def webhook_auth_pair() -> tuple[str, dict[str, str] | None]:
+    """Resolve ``(auth_method, auth_data)`` for new webhook registrations.
+
+    When ``WEBHOOK_SECRET`` is set, returns
+    ``("header", {"Authorization": f"Bearer {secret}"})`` so NC stores the
+    credential encrypted at-rest and forwards it on every delivery. When
+    unset, returns ``("none", None)`` — backward-compatible with deployments
+    that haven't rolled out webhook auth yet.
+
+    Shared by both registration call sites: the ``/app/webhooks`` preset
+    flow and the Astrolabe-facing ``/api/v1/webhooks`` endpoint.
+    """
+    secret = get_settings().webhook_secret
+    if not secret:
+        return ("none", None)
+    return ("header", {"Authorization": f"Bearer {secret}"})
 
 
 async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:
@@ -400,11 +421,14 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         webhook_uri = _get_webhook_uri()
         registered_ids = []
 
+        auth_method, auth_data = webhook_auth_pair()
         for event_config in preset["events"]:
             webhook_data = await webhooks_client.create_webhook(
                 event=event_config["event"],
                 uri=webhook_uri,
                 event_filter=event_config["filter"] if event_config["filter"] else None,
+                auth_method=auth_method,
+                auth_data=auth_data,
             )
             webhook_id = webhook_data["id"]
             registered_ids.append(webhook_id)

@@ -1,4 +1,5 @@
-"""Unit tests for ``_get_webhook_uri`` priority order.
+"""Unit tests for ``_get_webhook_uri`` priority order and the
+``webhook_auth_kwargs`` registration helper.
 
 Cloud deployments register the webhook URI returned by this function with
 Nextcloud. ECS Fargate also exposes ``/.dockerenv``, so an explicit public
@@ -7,7 +8,12 @@ URL must win over the docker auto-detection branch.
 
 import pytest
 
-from nextcloud_mcp_server.auth.webhook_routes import _get_webhook_uri
+from nextcloud_mcp_server.auth import webhook_routes
+from nextcloud_mcp_server.auth.webhook_routes import (
+    _get_webhook_uri,
+    webhook_auth_pair,
+)
+from nextcloud_mcp_server.config import Settings
 
 ENV_VARS = (
     "WEBHOOK_INTERNAL_URL",
@@ -93,3 +99,29 @@ def test_localhost_fallback_when_nothing_set(monkeypatch):
     _no_docker_markers(monkeypatch)
 
     assert _get_webhook_uri() == "http://localhost:8000/webhooks/nextcloud"
+
+
+# --- webhook_auth_pair() --------------------------------------------------
+
+
+def _patch_secret(monkeypatch, secret: str | None) -> None:
+    monkeypatch.setattr(
+        webhook_routes,
+        "get_settings",
+        lambda: Settings(webhook_secret=secret),
+    )
+
+
+@pytest.mark.unit
+def test_auth_pair_returns_none_when_secret_unset(monkeypatch):
+    _patch_secret(monkeypatch, None)
+    assert webhook_auth_pair() == ("none", None)
+
+
+@pytest.mark.unit
+def test_auth_pair_emits_bearer_header_when_secret_set(monkeypatch):
+    _patch_secret(monkeypatch, "supersecret")
+    assert webhook_auth_pair() == (
+        "header",
+        {"Authorization": "Bearer supersecret"},
+    )

@@ -41,6 +41,7 @@ class WebhooksClient(BaseNextcloudClient):
         http_method: str = "POST",
         auth_method: str = "none",
         headers: Optional[Dict[str, str]] = None,
+        auth_data: Optional[Dict[str, str]] = None,
         event_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Register a new webhook for the specified event.
@@ -49,8 +50,14 @@ class WebhooksClient(BaseNextcloudClient):
             event: Fully qualified event class name (e.g., "OCP\\Files\\Events\\Node\\NodeCreatedEvent")
             uri: Webhook endpoint URL to receive event notifications
             http_method: HTTP method for webhook delivery (default: "POST")
-            auth_method: Authentication method ("none", "bearer", etc.)
-            headers: Custom headers to include in webhook requests (e.g., Authorization header)
+            auth_method: Authentication method. Nextcloud's webhook_listeners
+                app accepts only ``"none"`` or ``"header"``.
+            headers: Optional static request headers attached to every
+                delivery (stored in clear text on the NC side).
+            auth_data: When ``auth_method="header"``, a dict of headers
+                holding the auth credentials. Stored encrypted at-rest in
+                Nextcloud's database and merged into the delivery request
+                at send time. Required when ``auth_method="header"``.
             event_filter: JSON object specifying event filters (e.g., {"user.uid": "bob"})
 
         Returns:
@@ -65,6 +72,9 @@ class WebhooksClient(BaseNextcloudClient):
 
         if headers:
             data["headers"] = headers
+
+        if auth_data:
+            data["authData"] = auth_data
 
         if event_filter:
             data["eventFilter"] = event_filter

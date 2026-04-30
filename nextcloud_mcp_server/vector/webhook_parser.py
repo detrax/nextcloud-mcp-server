@@ -38,8 +38,9 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
         event = payload["event"]
         event_class = event["class"]
         user_id = payload["user"]["uid"]
-    except (KeyError, TypeError):
-        logger.debug("Webhook payload missing user/event/class fields")
+        time = int(payload.get("time", 0) or 0)
+    except (KeyError, TypeError, ValueError):
+        logger.debug("Webhook payload has missing or malformed envelope fields")
         return None
 
     if event_class in (
@@ -47,7 +48,7 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
         _FILE_EVENT_WRITTEN,
         _FILE_EVENT_BEFORE_DELETED,
     ):
-        return _parse_file_event(event_class, event, user_id, payload.get("time", 0))
+        return _parse_file_event(event_class, event, user_id, time)
 
     logger.debug("Ignoring webhook for unsupported event: %s", event_class)
     return None
@@ -82,5 +83,5 @@ def _parse_file_event(
         doc_id=str(node_id),
         doc_type="note",
         operation=operation,
-        modified_at=int(time),
+        modified_at=time,
     )

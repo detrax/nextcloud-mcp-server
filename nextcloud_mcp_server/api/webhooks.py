@@ -18,6 +18,7 @@ from nextcloud_mcp_server.api.management import (
     extract_bearer_token,
     validate_token_and_get_user,
 )
+from nextcloud_mcp_server.auth.webhook_routes import webhook_auth_pair
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
 from ..http import nextcloud_httpx_client
@@ -213,10 +214,16 @@ async def create_webhook(request: Request) -> JSONResponse:
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,
         ) as client:
-            # Use WebhooksClient to create webhook
+            # Use WebhooksClient to create webhook. Inject auth headers when
+            # WEBHOOK_SECRET is configured so deliveries are authenticated.
             webhooks_client = WebhooksClient(client, user_id)
+            auth_method, auth_data = webhook_auth_pair()
             webhook_data = await webhooks_client.create_webhook(
-                event=event, uri=uri, event_filter=event_filter
+                event=event,
+                uri=uri,
+                event_filter=event_filter,
+                auth_method=auth_method,
+                auth_data=auth_data,
             )
 
             return JSONResponse({"webhook": webhook_data})

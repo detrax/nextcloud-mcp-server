@@ -10,9 +10,30 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from nextcloud_mcp_server.config import Settings
+from nextcloud_mcp_server.vector import webhook_receiver
 from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _reset_warned_flag():
+    """The receiver warns once per process when WEBHOOK_SECRET is missing.
+    Reset between tests so each gets a clean slate."""
+    webhook_receiver._warned_about_missing_secret = False
+    yield
+    webhook_receiver._warned_about_missing_secret = False
+
+
+def _patch_secret(monkeypatch, secret: str | None) -> None:
+    """Make ``get_settings()`` (as called inside the receiver) return a
+    Settings instance with the given ``webhook_secret``."""
+    monkeypatch.setattr(
+        webhook_receiver,
+        "get_settings",
+        lambda: Settings(webhook_secret=secret),
+    )
 
 
 def _make_app(send_stream=None) -> Starlette:
@@ -142,3 +163,85 @@ def test_returns_500_when_stream_is_closed():
 
     assert response.status_code == 500
     assert response.json()["status"] == "error"
+
+
+# --- WEBHOOK_SECRET authentication ---------------------------------------
+
+
+def test_secret_set_valid_bearer_header_queues_task(monkeypatch):
+    _patch_secret(monkeypatch, "supersecret")
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/nextcloud",
+            json=_NOTE_CREATED,
+            headers={"Authorization": "Bearer supersecret"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert receive_stream.receive_nowait().doc_id == "437"
+
+
+def test_secret_set_missing_authorization_returns_401(monkeypatch):
+    _patch_secret(monkeypatch, "supersecret")
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
+
+    assert response.status_code == 401
+    assert response.json()["status"] == "unauthorized"
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
+
+
+def test_secret_set_wrong_secret_returns_401(monkeypatch):
+    _patch_secret(monkeypatch, "supersecret")
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/nextcloud",
+            json=_NOTE_CREATED,
+            headers={"Authorization": "Bearer wrong"},
+        )
+
+    assert response.status_code == 401
+    with pytest.raises(anyio.WouldBlock):
+        receive_stream.receive_nowait()
+
+
+def test_secret_set_wrong_scheme_returns_401(monkeypatch):
+    """A token without the Bearer prefix is rejected."""
+    _patch_secret(monkeypatch, "supersecret")
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/nextcloud",
+            json=_NOTE_CREATED,
+            headers={"Authorization": "supersecret"},
+        )
+
+    assert response.status_code == 401
+
+
+def test_secret_unset_accepts_unauthenticated(monkeypatch):
+    """Backward compat: deployments that haven't yet set WEBHOOK_SECRET keep
+    working — the receiver accepts unauthenticated POSTs and logs a one-time
+    warning."""
+    _patch_secret(monkeypatch, None)
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=4)
+    app = _make_app(send_stream=send_stream)
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/nextcloud", json=_NOTE_CREATED)
+
+    assert response.status_code == 200
+    assert receive_stream.receive_nowait().doc_id == "437"
