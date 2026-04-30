@@ -77,33 +77,37 @@ async def _get_installed_apps(http_client: httpx.AsyncClient) -> list[str]:
 def _get_webhook_uri() -> str:
     """Get the webhook endpoint URI for this MCP server.
 
-    This function determines the correct webhook URL based on the environment:
-    1. Uses WEBHOOK_INTERNAL_URL if explicitly set (highest priority)
-    2. Detects Docker environment and uses internal service name
-    3. Falls back to NEXTCLOUD_MCP_SERVER_URL
+    Priority (highest first):
+      1. ``WEBHOOK_INTERNAL_URL`` — explicit override, e.g. for split
+         internal/external URLs.
+      2. ``NEXTCLOUD_MCP_SERVER_URL`` — the configured public URL. This is
+         set on cloud deployments (ECS, k8s) and is the URL Nextcloud must
+         POST to.
+      3. ``/.dockerenv`` (or podman / ``DOCKER_CONTAINER=true``) → internal
+         docker-compose service name. Only relevant when no public URL is
+         configured — i.e. local dev where MCP and NC share a Docker
+         network.
+      4. ``http://localhost:8000`` — last-resort fallback.
 
-    In Docker environments, Nextcloud needs to reach the MCP service using
-    the internal Docker network hostname (e.g., http://mcp:8000), not localhost.
-
-    Returns:
-        Full webhook endpoint URL accessible from Nextcloud
+    Note: ECS Fargate containers also expose ``/.dockerenv``. Without this
+    priority order, cloud deployments would silently register an internal
+    docker-compose hostname (e.g. ``http://mcp:8000``) that NC cannot
+    resolve, dropping every webhook delivery.
     """
-    # Explicit override (highest priority)
     webhook_url = os.getenv("WEBHOOK_INTERNAL_URL")
     if webhook_url:
         return f"{webhook_url}/webhooks/nextcloud"
 
-    # Detect Docker environment
-    # Check for common Docker indicators
-    is_docker = (
-        os.path.exists("/.dockerenv")  # Docker container marker file
-        or os.path.exists("/run/.containerenv")  # Podman marker
-        or os.getenv("DOCKER_CONTAINER") == "true"  # Explicit flag
-    )
+    server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL")
+    if server_url:
+        return f"{server_url}/webhooks/nextcloud"
 
+    is_docker = (
+        os.path.exists("/.dockerenv")
+        or os.path.exists("/run/.containerenv")
+        or os.getenv("DOCKER_CONTAINER") == "true"
+    )
     if is_docker:
-        # In Docker, use internal service name from NEXTCLOUD_MCP_SERVICE_NAME
-        # or default to 'mcp' (docker-compose service name)
         service_name = os.getenv("NEXTCLOUD_MCP_SERVICE_NAME", "mcp")
         port = os.getenv("NEXTCLOUD_MCP_PORT", "8000")
         logger.debug(
@@ -111,9 +115,7 @@ def _get_webhook_uri() -> str:
         )
         return f"http://{service_name}:{port}/webhooks/nextcloud"
 
-    # Fallback to configured server URL (for non-Docker deployments)
-    server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-    return f"{server_url}/webhooks/nextcloud"
+    return "http://localhost:8000/webhooks/nextcloud"
 
 
 async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:

@@ -130,6 +130,7 @@ from nextcloud_mcp_server.vector.oauth_sync import (
     user_manager_task,
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.webhook_receiver import handle_nextcloud_webhook
 
 logger = logging.getLogger(__name__)
 HTTPXClientInstrumentor().instrument()
@@ -1950,30 +1951,6 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             status_code=status_code,
         )
 
-    async def handle_nextcloud_webhook(request):
-        """Test webhook endpoint to capture and log Nextcloud webhook payloads.
-
-        This is a temporary endpoint for testing webhook schemas and payloads.
-        It logs the full payload and returns 200 OK immediately.
-        """
-
-        try:
-            payload = await request.json()
-            logger.info("=" * 80)
-            logger.info("🔔 Webhook received from Nextcloud:")
-            logger.info(json.dumps(payload, indent=2, sort_keys=True))
-            logger.info("=" * 80)
-
-            return JSONResponse(
-                {"status": "received", "timestamp": payload.get("time")},
-                status_code=200,
-            )
-        except Exception as e:
-            logger.error(f"❌ Failed to parse webhook payload: {e}")
-            return JSONResponse(
-                {"error": "invalid_payload", "message": str(e)}, status_code=400
-            )
-
     # Add Protected Resource Metadata (PRM) endpoint for OAuth mode
     routes = []
 
@@ -1982,11 +1959,13 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
     routes.append(Route("/health/ready", health_ready, methods=["GET"]))
     logger.info("Health check endpoints enabled: /health/live, /health/ready")
 
-    # Add test webhook endpoint (for development/testing)
+    # Add Nextcloud webhook receiver (queues DocumentTasks for vector sync).
+    # Implementation lives in vector/webhook_receiver.py; the handler reads
+    # the send-stream from request.app.state.document_send_stream.
     routes.append(
         Route("/webhooks/nextcloud", handle_nextcloud_webhook, methods=["POST"])
     )
-    logger.info("Test webhook endpoint enabled: /webhooks/nextcloud")
+    logger.info("Webhook endpoint enabled: /webhooks/nextcloud")
 
     # Add management API endpoints for Nextcloud PHP app
     # Tier 1: Public endpoints (no auth required)
