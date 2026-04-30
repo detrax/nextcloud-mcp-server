@@ -93,8 +93,6 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env \
 Create `docker-compose.yml`:
 
 ```yaml
-version: '3.8'
-
 services:
   mcp:
     image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
@@ -369,8 +367,6 @@ docker-compose logs -f mcp
 For production deployments, use Docker Compose with the recommended settings:
 
 ```yaml
-version: '3.8'
-
 services:
   mcp:
     image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest

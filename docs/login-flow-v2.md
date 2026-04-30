@@ -11,7 +11,7 @@ Two authentication legs, each with a different mechanism:
 ```
 ┌─────────────────┐    OAuth/OIDC    ┌──────────────────┐   App password    ┌─────────────────┐
 │   MCP Client    │ ───────────────> │   MCP Server     │ ────────────────> │   Nextcloud     │
-│ (Claude, etc.)  │   (mcp:* scopes) │  (OIDC RP of IdP,│   (Basic Auth)    │   (NC 16+)      │
+│ (Claude, etc.)  │  (per-app scopes)│  (OIDC RP of IdP,│   (Basic Auth)    │   (NC 16+)      │
 │                 │                  │  OAuth facade,   │                   │                 │
 │                 │                  │  app-pwd holder) │                   │                 │
 └─────────────────┘                  └──────────────────┘                   └─────────────────┘
@@ -26,7 +26,7 @@ Two authentication legs, each with a different mechanism:
                                      └─────────────────┘
 ```
 
-- **MCP client → MCP server**: OAuth 2.1 with PKCE. The MCP server is **not** a standalone OAuth issuer — it acts as an OIDC relying party of a configurable identity provider and exposes an OAuth facade in front of it. The IdP is selected by `OIDC_DISCOVERY_URL` (defaults to Nextcloud's built-in OIDC); Keycloak, AWS Cognito, and other OIDC-compliant IdPs are also supported. Tokens are signed by that IdP, validated by the MCP server against the IdP's JWKS, and carry `mcp:*` scopes that gate which tools the user can call.
+- **MCP client → MCP server**: OAuth 2.1 with PKCE. The MCP server is **not** a standalone OAuth issuer — it acts as an OIDC relying party of a configurable identity provider and exposes an OAuth facade in front of it. The IdP is selected by `OIDC_DISCOVERY_URL` (defaults to Nextcloud's built-in OIDC); Keycloak, AWS Cognito, and other OIDC-compliant IdPs are also supported. Tokens are signed by that IdP, validated by the MCP server against the IdP's JWKS, and carry per-app scopes (`notes.read`, `talk.read`, `files.write`, …) that gate which tools the user can call.
 - **MCP server → IdP (auth leg)**: The MCP server registers itself with the IdP via static `NEXTCLOUD_OIDC_CLIENT_ID`/`SECRET` (preferred — these are generic OIDC client credentials despite the Nextcloud-flavored naming, and work with any OIDC provider) or RFC 7591 DCR (fallback). This relationship is used for OIDC discovery, JWKS retrieval, and token validation.
 - **MCP server → Nextcloud (data leg)**: Per-user **app password** obtained via Nextcloud's native [Login Flow v2](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html#login-flow-v2). Sent as HTTP Basic Auth. Login Flow v2 is always Nextcloud's protocol regardless of which IdP authenticated the MCP client.
 
@@ -123,7 +123,7 @@ Each user goes through provisioning **once**, the first time they connect. Subse
 └──────┬──────┘                  └────────┬─────────┘                  └────────┬────────┘
        │  1. OAuth PKCE                   │                                     │
        ├─────────────────────────────────>│                                     │
-       │  ← access token (mcp:* scopes)   │                                     │
+       │  ← access token (per-app scopes) │                                     │
        │                                  │                                     │
        │  2. MCP request                  │                                     │
        ├─────────────────────────────────>│                                     │
@@ -178,14 +178,27 @@ Nextcloud's app passwords have **no native scope support** — they grant the us
 
 ### Scope Reference
 
-| Scope | Operations | Tool count |
-|-------|------------|------------|
-| `mcp:notes.read` | Read access (get, list, search) across all Nextcloud apps | ~36 tools |
-| `mcp:notes.write` | Write access (create, update, delete) across all Nextcloud apps | ~54 tools |
+Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `mcp:` prefix.
 
-> The historical `notes.read` / `notes.write` naming covers all Nextcloud apps, not just the Notes app — it's a project-wide read/write distinction.
+| Scope | Covers |
+|-------|--------|
+| `notes.read` / `notes.write` | Notes app |
+| `talk.read` / `talk.write` | Talk (spreed) |
+| `files.read` / `files.write` | Files / WebDAV |
+| `calendar.read` / `calendar.write` | Calendar (events + tasks/VTODO) |
+| `contacts.read` / `contacts.write` | Contacts (CardDAV) |
+| `deck.read` / `deck.write` | Deck |
+| `tables.read` / `tables.write` | Tables |
+| `cookbook.read` / `cookbook.write` | Cookbook |
+| `todo.read` / `todo.write` | Tasks (VTODO outside Calendar) |
+| `collectives.read` / `collectives.write` | Collectives |
+| `news.read` | News (read-only) |
+| `sharing.write` | Share-link / share-permission management |
+| `semantic.read` | Semantic search + RAG (when enabled) |
 
-Standard OIDC scopes (`openid`, `profile`, `email`) are also supported and have no effect on tool access.
+The authoritative list is enumerated at runtime by [`scope_authorization.discover_all_scopes()`](../nextcloud_mcp_server/auth/scope_authorization.py) from each tool's `@require_scopes(...)` decorator and exposed via the PRM endpoint (`/.well-known/oauth-protected-resource/mcp`).
+
+Standard OIDC scopes (`openid`, `profile`, `email`) are also accepted and have no effect on tool access.
 
 ### How Scopes Are Enforced
 
@@ -193,7 +206,7 @@ Each MCP tool is decorated with `@require_scopes(...)`:
 
 ```python
 @mcp.tool()
-@require_scopes("mcp:notes.read")
+@require_scopes("notes.read")
 async def nc_notes_get_note(note_id: int, ctx: Context):
     ...
 ```
@@ -203,7 +216,7 @@ When a client calls `list_tools`, the server returns only tools the user has gra
 ```http
 HTTP/1.1 403 Forbidden
 WWW-Authenticate: Bearer error="insufficient_scope",
-                  scope="mcp:notes.write",
+                  scope="notes.write",
                   resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
 ```
 
@@ -267,7 +280,7 @@ The user revoked it from **Settings → Security → Devices & Sessions**. Delet
 
 The provisioning session store is in-memory; `ENABLE_LOGIN_FLOW=true` assumes a single worker. Running with `uvicorn --workers N` will cause provisioning sessions to randomly fail. For higher concurrency, scale horizontally (multiple containers behind a sticky-session load balancer) rather than within a single process.
 
-> **Sticky-session keying:** route on the user's OAuth bearer token (or a session cookie tied to the user) — **not** on source IP. MCP clients may not maintain stable IPs between the request that initiates provisioning and the polling request that completes it, so IP-based affinity will silently break the flow. A stable per-user identifier from the `Authorization` header is the right key.
+> **Sticky-session keying:** route on the **user identity** (e.g. the `sub` claim from the OAuth Bearer token) — **not** the raw token value, and **not** source IP. Bearer tokens rotate on refresh, which would silently break token-value affinity if a refresh lands between the request that initiates provisioning and the polling request that completes it. MCP clients may also not maintain stable IPs across those requests. A stable per-user identifier extracted from the `Authorization` header (e.g. `sub`) is the right key.
 
 ## See Also
 

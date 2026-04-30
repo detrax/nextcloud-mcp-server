@@ -60,10 +60,10 @@ ENABLE_MULTI_USER_BASIC_AUTH=true
 The recommended mode for hosted and OAuth-based deployments. MCP clients authenticate to the MCP server via OAuth; the MCP server obtains a per-user app password from Nextcloud (via Login Flow v2) and uses HTTP Basic Auth to talk to Nextcloud APIs.
 
 ```
-MCP Client ──(OAuth, mcp:* scopes)──> MCP Server ──(Basic Auth, app password)──> Nextcloud
+MCP Client ──(OAuth, per-app scopes)──> MCP Server ──(Basic Auth, app password)──> Nextcloud
 ```
 
-The MCP server enforces `mcp:*` scopes at the application layer (defense-in-depth, since Nextcloud app passwords have no native scope support).
+The MCP server enforces per-app scopes (`notes.read`, `talk.write`, `files.read`, etc. — see [Login Flow v2 → Scope Reference](login-flow-v2.md#scope-reference)) at the application layer (defense-in-depth, since Nextcloud app passwords have no native scope support).
 
 **See [Login Flow v2](login-flow-v2.md) for full setup, architecture, scope reference, and troubleshooting.**
 

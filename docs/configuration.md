@@ -108,8 +108,11 @@ NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.instance.com
 | `ENABLE_LOGIN_FLOW` | ✅ Yes | Set to `true` to enable Login Flow v2 |
 | `TOKEN_ENCRYPTION_KEY` | ✅ Yes | Fernet key for app-password encryption — generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `TOKEN_STORAGE_DB` | ✅ Yes | Path to SQLite DB for stored app passwords (use a persistent volume) |
-| `NEXTCLOUD_MCP_SERVER_URL` | ✅ Yes | Public URL of the MCP server (OAuth issuer) |
+| `NEXTCLOUD_MCP_SERVER_URL` | ✅ Yes | Public URL of the MCP server (used as the audience claim and for browser redirects) |
 | `NEXTCLOUD_PUBLIC_ISSUER_URL` | ✅ Yes | Public URL of Nextcloud (for browser redirects during Login Flow v2) |
+| `NEXTCLOUD_OIDC_CLIENT_ID` | ⚠️ Optional (preferred) | OIDC client ID for the MCP server's relying-party registration with the IdP (Nextcloud OIDC by default; Keycloak / Cognito / etc. via `OIDC_DISCOVERY_URL`). If unset and the IdP advertises a `registration_endpoint`, RFC 7591 DCR is used as fallback. |
+| `NEXTCLOUD_OIDC_CLIENT_SECRET` | ⚠️ Optional (preferred) | OIDC client secret paired with `NEXTCLOUD_OIDC_CLIENT_ID`. |
+| `OIDC_DISCOVERY_URL` | Optional | Override the IdP discovery URL. Defaults to `${NEXTCLOUD_HOST}/.well-known/openid-configuration` (Nextcloud's built-in OIDC). Set to a Keycloak realm or AWS Cognito user-pool discovery URL to use an external IdP. |
 
 See [Login Flow v2](login-flow-v2.md) for full setup, scope reference, and troubleshooting.
 
