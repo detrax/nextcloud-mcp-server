@@ -104,12 +104,16 @@ mcp-login-flow:
     - NEXTCLOUD_MCP_SERVER_URL=http://localhost:8004
     - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8080
     - ENABLE_LOGIN_FLOW=true
+    # Dev-only inline value. In production, mount via Docker secret and read
+    # from a *_FILE env var or a secrets-management init step.
     - TOKEN_ENCRYPTION_KEY=<your-fernet-key>
     - TOKEN_STORAGE_DB=/app/data/tokens.db
   volumes:
     - login-flow-data:/app/data
     - login-flow-oauth-storage:/app/.oauth
 ```
+
+> **Production note:** `TOKEN_ENCRYPTION_KEY` is a credential — losing it makes every stored app password unrecoverable. Inline-environment values are fine for local development but should be passed via Docker secrets (or your platform's equivalent) in production. See [Configuration → Best Practices for Docker](configuration.md#for-docker).
 
 The `--oauth` flag enables the OAuth/OIDC identity layer that Login Flow v2 builds on (user identity via OAuth session, Nextcloud access via app passwords).
 
@@ -226,7 +230,7 @@ Implementation: [`nextcloud_mcp_server/auth/scope_authorization.py`](../nextclou
 
 ## OAuth Endpoints
 
-When `--oauth` is enabled, the MCP server exposes OAuth 2.1 endpoints. **These endpoints front the configured IdP** — discovery metadata, token issuance, and JWKS still come from whichever provider is selected via `OIDC_DISCOVERY_URL` (Nextcloud OIDC by default, or Keycloak / Cognito / etc.); the MCP server is not a standalone OAuth issuer.
+When `--oauth` is enabled, the MCP server exposes OAuth 2.1 endpoints. **These endpoints front the configured IdP**: discovery metadata is sourced from the IdP, and tokens served via the MCP server's `/token` endpoint are signed by the IdP's key and validated against its JWKS — the MCP server has no signing keys of its own. The IdP is selected by `OIDC_DISCOVERY_URL` (Nextcloud OIDC by default, or Keycloak / Cognito / etc.).
 
 | Endpoint | RFC | Purpose |
 |----------|-----|---------|

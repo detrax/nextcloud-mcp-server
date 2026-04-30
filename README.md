@@ -73,7 +73,7 @@ For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-
 - **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
-- **Production-Ready Auth** - Basic Auth with app passwords; multi-user via Login Flow v2 (OAuth-to-MCP supported, with app-password conversion to Nextcloud)
+- **Production-Ready Auth** - Basic Auth with app passwords; multi-user via Login Flow v2 — MCP clients authenticate via OAuth, the server handles Nextcloud app passwords transparently
 - **Multiple Transports** - streamable-http (default) and stdio
 
 ## Supported Apps

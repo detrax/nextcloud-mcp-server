@@ -109,7 +109,7 @@ Astrolabe                     MCP Server                   Nextcloud
 #### Astrolabe → MCP Server
 
 ```
-Astrolabe                     MCP Server                   Nextcloud OIDC
+Astrolabe                     MCP Server                   OIDC Provider
     │                             │                            │
     │── OAuth Flow ──────────────▶│◀── Token from IdP ────────▶│
     │   (user initiates)          │                            │
