@@ -4,7 +4,7 @@ This document explains the architecture of the semantic search feature in the Ne
 
 > [!IMPORTANT]
 > **Status: Experimental**
-> - Disabled by default (`VECTOR_SYNC_ENABLED=false`)
+> - Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`)
 > - Currently supports **Notes, Files (PDFs), News items, and Deck cards**
 > - Requires additional infrastructure (Qdrant vector database + Ollama embedding service)
 > - RAG answer generation requires MCP client sampling support
@@ -86,7 +86,7 @@ graph TB
 
 ## How It Works: Background Synchronization
 
-Background synchronization runs automatically when `VECTOR_SYNC_ENABLED=true`, discovering changes and indexing documents without user intervention.
+Background synchronization runs automatically when `ENABLE_SEMANTIC_SEARCH=true`, discovering changes and indexing documents without user intervention.
 
 ```mermaid
 sequenceDiagram
@@ -478,7 +478,7 @@ except Exception as e:
 
 **BasicAuth:**
 - Set `NEXTCLOUD_USERNAME` and `NEXTCLOUD_PASSWORD`
-- Background sync works immediately when `VECTOR_SYNC_ENABLED=true`
+- Background sync works immediately when `ENABLE_SEMANTIC_SEARCH=true`
 - Credentials stored in `.env` file (secure server access required)
 
 **OAuth:**
@@ -497,7 +497,7 @@ except Exception as e:
 
 **In-Memory Mode:**
 ```bash
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 # QDRANT_LOCATION not set → defaults to :memory:
 ```
 - Fastest startup
@@ -506,7 +506,7 @@ VECTOR_SYNC_ENABLED=true
 
 **Persistent Local Mode:**
 ```bash
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 QDRANT_LOCATION=/var/lib/qdrant
 ```
 - Vectors survive restarts
@@ -515,7 +515,7 @@ QDRANT_LOCATION=/var/lib/qdrant
 
 **Network Mode (Recommended for Production):**
 ```bash
-VECTOR_SYNC_ENABLED=true
+ENABLE_SEMANTIC_SEARCH=true
 QDRANT_URL=http://qdrant:6333
 QDRANT_API_KEY=secret  # optional
 ```
@@ -563,12 +563,12 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text  # 768-dimensional vectors
 
 **Enable Semantic Search:**
 ```bash
-VECTOR_SYNC_ENABLED=true  # Default: false (opt-in)
+ENABLE_SEMANTIC_SEARCH=true  # Default: false (opt-in)
 ```
 
 **Qdrant Vector Database:**
 ```bash
-# In-memory mode (default if VECTOR_SYNC_ENABLED=true)
+# In-memory mode (default if ENABLE_SEMANTIC_SEARCH=true)
 # QDRANT_LOCATION not set → uses :memory:
 
 # Persistent local mode
@@ -617,7 +617,7 @@ VECTOR_SYNC_INTERVAL=3600  # Scan interval in seconds (default: 1 hour)
 
 ## Operational Behavior
 
-### What Happens When VECTOR_SYNC_ENABLED=true
+### What Happens When ENABLE_SEMANTIC_SEARCH=true
 
 **Immediate (Server Startup):**
 1. MCP server connects to Qdrant (creates collection if needed)
@@ -752,7 +752,7 @@ For detailed observability setup, see [docs/observability.md](observability.md).
 
 **Diagnosis Flow:**
 1. Check sync status: `nc_get_vector_sync_status`
-   - `sync_enabled: false` → Enable with `VECTOR_SYNC_ENABLED=true`
+   - `sync_enabled: false` → Enable with `ENABLE_SEMANTIC_SEARCH=true`
    - `status: error` → Check scanner logs for failures
 2. Check queue size:
    - `pending_documents > 0` → Processing in progress, wait
@@ -765,7 +765,7 @@ For detailed observability setup, see [docs/observability.md](observability.md).
    - Model not found → Pull model: `ollama pull nomic-embed-text`
 
 **Common Causes:**
-- Sync disabled (default): Enable `VECTOR_SYNC_ENABLED=true`
+- Sync disabled (default): Enable `ENABLE_SEMANTIC_SEARCH=true`
 - Ollama not running: Start Ollama service
 - Qdrant not accessible: Check network/URL
 - First scan in progress: Wait up to 1 hour + processing time
@@ -911,7 +911,7 @@ For detailed observability setup, see [docs/observability.md](observability.md).
 
 ### Related Documentation
 
-- **[OAuth Architecture](oauth-architecture.md)** - OAuth flows, scopes, token management
+- **[Login Flow v2](login-flow-v2.md)** - OAuth flows, scopes, token management
 - **[Comparison with Context Agent](comparison-context-agent.md)** - When to use Nextcloud MCP Server vs Context Agent
 
 ---

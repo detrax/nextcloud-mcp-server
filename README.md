@@ -15,6 +15,9 @@ This is a **dedicated standalone MCP server** designed for external MCP clients 
 > [!NOTE]
 > **Looking for AI features inside Nextcloud?** Nextcloud also provides [Context Agent](https://github.com/nextcloud/context_agent), which powers the Assistant app and runs as an ExApp inside Nextcloud. See [docs/comparison-context-agent.md](docs/comparison-context-agent.md) for a detailed comparison of use cases.
 
+> [!TIP]
+> **Don't want to self-host?** [Astrolabe Cloud](https://astrolabecloud.com) is a managed hosting service for this MCP server, aimed at users and teams who want advanced features like background sync and semantic search without operating the infrastructure themselves. The service is currently under development — sign up on the landing page to join the early-adopter list.
+
 ## Quick Start
 
 Run the server locally with [uvx](https://docs.astral.sh/uv/) (no installation required):
@@ -52,36 +55,16 @@ Or add it directly to your MCP client configuration (e.g. `claude_desktop_config
 For full features including semantic search, run with Docker:
 
 ```bash
-# 1. Create a minimal configuration
-cat > .env << EOF
-NEXTCLOUD_HOST=https://your.nextcloud.instance.com
-NEXTCLOUD_USERNAME=your_username
-NEXTCLOUD_PASSWORD=your_app_password
-EOF
-
-# 2. Start the server
-docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+docker run -p 127.0.0.1:8000:8000 --rm \
+  -e NEXTCLOUD_HOST=https://your.nextcloud.instance.com \
+  -e NEXTCLOUD_USERNAME=your_username \
+  -e NEXTCLOUD_PASSWORD=your_app_password \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
-
-# 3. Test the connection
-curl http://127.0.0.1:8000/health/ready
-
-# 4. Connect to the endpoint
-http://127.0.0.1:8000/mcp
 ```
 
-**Docker Compose Profiles** (for development/testing):
+Then connect your MCP client (Claude Desktop, IDEs, `mcp dev`, etc.) to `http://127.0.0.1:8000/mcp`.
 
-```bash
-docker compose --profile single-user up -d       # Port 8000
-docker compose --profile multi-user-basic up -d   # Port 8003
-docker compose --profile oauth up -d              # Port 8001
-docker compose --profile login-flow up -d         # Port 8004
-```
-
-**Next Steps:**
-- Connect your MCP client (Claude Desktop, IDEs, `mcp dev`, etc.)
-- See [docs/installation.md](docs/installation.md) for other deployment options. For Kubernetes (Helm), see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-charts)
+For Kubernetes, see [cbcoutinho/helm-charts](https://github.com/cbcoutinho/helm-charts). For other deployment options and Compose profiles, see [docs/installation.md](docs/installation.md).
 
 ## Key Features
 
@@ -90,7 +73,7 @@ docker compose --profile login-flow up -d         # Port 8004
 - **Semantic Search (Experimental)** - Optional vector-powered search for Notes, Files, News items, and Deck cards (requires Qdrant + Ollama)
 - **Document Processing** - OCR and text extraction from PDFs, DOCX, images with progress notifications
 - **Flexible Deployment** - Docker, Kubernetes ([Helm chart](https://github.com/cbcoutinho/helm-charts)), VM, or local installation
-- **Production-Ready Auth** - Basic Auth with app passwords (recommended) or OAuth2/OIDC (experimental)
+- **Production-Ready Auth** - Basic Auth with app passwords; multi-user via Login Flow v2 — MCP clients authenticate via OAuth, the server handles Nextcloud app passwords transparently
 - **Multiple Transports** - streamable-http (default) and stdio
 
 ## Supported Apps
@@ -114,121 +97,35 @@ Want to see another Nextcloud app supported? [Open an issue](https://github.com/
 
 ## Authentication
 
-> [!IMPORTANT]
-> **OAuth2/OIDC is experimental** and requires a manual patch to the `user_oidc` app:
-> - **Required patch**: Bearer token support ([issue #1221](https://github.com/nextcloud/user_oidc/issues/1221))
-> - **Impact**: Without the patch, most app-specific APIs fail with 401 errors
-> - **Recommendation**: Use Basic Auth for production until upstream patches are merged
->
-> See [docs/oauth-upstream-status.md](docs/oauth-upstream-status.md) for patch status and workarounds.
+The MCP server authenticates to Nextcloud using **app-specific passwords** (Basic Auth). Three deployment modes are supported:
 
-**Recommended:** Basic Auth with app-specific passwords provides secure, production-ready authentication. See [docs/authentication.md](docs/authentication.md) for setup details and OAuth configuration.
+| Mode | Best for |
+|------|----------|
+| Single-User (BasicAuth) | Personal use, development, single-user deployments |
+| Multi-User (BasicAuth pass-through) | Multi-user setups where clients send credentials via Authorization header |
+| Multi-User (Login Flow v2) | Multi-user / hosted deployments — clients authenticate to the MCP server via OAuth, and the server obtains a per-user app password from Nextcloud and uses it transparently |
 
-### Authentication Modes
+OAuth-direct-to-Nextcloud is no longer supported (it required upstream patches to `user_oidc` that were never merged). Login Flow v2 replaces it for multi-user deployments and works with stock Nextcloud.
 
-The server supports four authentication modes:
-
-**Single-User (BasicAuth):**
-- One set of credentials shared by all MCP clients
-- Simple setup: username + app password in environment variables
-- All clients access Nextcloud as the same user
-- Best for: Personal use, development, single-user deployments
-
-**Multi-User (BasicAuth Pass-Through):**
-- MCP clients send credentials via Authorization header
-- Server passes through to Nextcloud (stateless by default)
-- Optional offline access for background operations (`ENABLE_MULTI_USER_BASIC_AUTH=true`)
-- Best for: Multi-user setups without OAuth infrastructure
-
-**Multi-User (OAuth):**
-- Each MCP client authenticates separately with their own Nextcloud account
-- Per-user scopes and permissions (clients only see tools they're authorized for)
-- More secure: tokens expire, credentials never shared with server
-- Best for: Teams, multi-user deployments, production environments with multiple users
-- Requires: Patches to the `user_oidc` app (experimental)
-
-**Multi-User (Login Flow v2):**
-- Uses Nextcloud's native Login Flow v2 to obtain per-user app passwords
-- No OAuth patches required — works with stock Nextcloud
-- Each user authenticates via browser, server manages app passwords
-- Best for: Multi-user deployments without OAuth infrastructure (`ENABLE_LOGIN_FLOW=true`)
-- Experimental: See [ADR-022](docs/ADR-022-deployment-mode-consolidation.md) for details
-
-See [docs/authentication.md](docs/authentication.md) for detailed setup instructions.
+See [docs/authentication.md](docs/authentication.md) for setup instructions.
 
 ## Semantic Search
 
-The server provides an experimental RAG pipeline to enable _Semantic Search_ that enables MCP clients to find information in Nextcloud based on **meaning** rather than just keywords. Instead of matching "machine learning" only when those exact words appear, it understands that "neural networks," "AI models," and "deep learning" are semantically related concepts.
+An experimental RAG pipeline that lets MCP clients find Nextcloud content by **meaning** rather than keywords — a query for "car" also surfaces notes about "vehicle" or "transportation". Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`); requires a vector database and embedding service. See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) and [docs/configuration.md](docs/configuration.md).
 
-**Example:**
-- **Keyword search**: Query "car" only finds notes containing "car"
-- **Semantic search**: Query "car" also finds notes about "automobile," "vehicle," "sedan," "transportation"
-
-This enables natural language queries and helps discover related content across your Nextcloud notes.
-
-> [!NOTE]
-> **Semantic Search is experimental and opt-in:**
-> - Disabled by default (`ENABLE_SEMANTIC_SEARCH=false`)
-> - Currently supports Notes app only (multi-app support planned)
-> - Requires additional infrastructure: vector database + embedding service
-> - Answer generation (`nc_semantic_search_answer`) requires MCP client sampling support
->
-> See [docs/semantic-search-architecture.md](docs/semantic-search-architecture.md) for architecture details and [docs/configuration.md](docs/configuration.md) for setup instructions.
+> [!TIP]
+> **Don't want to run Qdrant and an embedding service?** [Astrolabe Cloud](https://astrolabecloud.com) (under development) provides semantic search and background sync as a managed service.
 
 ## Documentation
 
-### Getting Started
-- **[Installation](docs/installation.md)** - Docker, local, or VM deployment. [Helm chart](https://github.com/cbcoutinho/helm-charts) for Kubernetes
-- **[Configuration](docs/configuration.md)** - Environment variables and advanced options
-- **[Authentication](docs/authentication.md)** - Basic Auth vs OAuth2/OIDC setup
-- **[Running the Server](docs/running.md)** - Start, manage, and troubleshoot
-
-### Features
-- **[App Documentation](docs/)** - Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables
-- **[Document Processing](docs/configuration.md#document-processing)** - OCR and text extraction setup
-- **[Semantic Search Architecture](docs/semantic-search-architecture.md)** - Experimental vector search (Notes, Files, News items, Deck cards; opt-in)
-- **[Vector Sync UI Guide](docs/user-guide/vector-sync-ui.md)** - Browser interface for semantic search visualization and testing
-
-### Advanced Topics
-- **[OAuth Architecture](docs/oauth-architecture.md)** - How OAuth works (experimental)
-- **[OAuth Quick Start](docs/quickstart-oauth.md)** - 5-minute OAuth setup
-- **[OAuth Setup Guide](docs/oauth-setup.md)** - Detailed OAuth configuration
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
-- **[Comparison with Context Agent](docs/comparison-context-agent.md)** - When to use each approach
-
-## Examples
-
-### Create a Note
-```
-AI: "Create a note called 'Meeting Notes' with today's agenda"
-→ Uses nc_notes_create_note tool
-```
-
-### Import Recipes
-```
-AI: "Import the recipe from https://www.example.com/recipe/chocolate-cake"
-→ Uses nc_cookbook_import_recipe tool with schema.org metadata extraction
-```
-
-### Schedule Meetings
-```
-AI: "Schedule a team meeting for next Tuesday at 2pm"
-→ Uses nc_calendar_create_event tool
-```
-
-### Manage Files
-```
-AI: "Create a folder called 'Project X' and move all PDFs there"
-→ Uses nc_webdav_create_directory and nc_webdav_move tools
-```
-
-### Semantic Search (Experimental, Opt-in)
-```
-AI: "Find notes related to machine learning concepts"
-→ Uses nc_semantic_search to find semantically similar notes (requires Qdrant + Ollama setup)
-```
-
-**Note:** For AI-generated answers with citations, use `nc_semantic_search_answer` (requires MCP client with sampling support).
+- **[Installation](docs/installation.md)** — Docker, Compose profiles, local, VM
+- **[Configuration](docs/configuration.md)** — Environment variables, document processing, semantic search setup
+- **[Authentication](docs/authentication.md)** — Basic Auth, Login Flow v2
+- **[Running the Server](docs/running.md)** — Start, manage, troubleshoot
+- **[App Documentation](docs/)** — Per-app guides (Notes, Calendar, Contacts, WebDAV, Deck, Cookbook, Tables)
+- **[Semantic Search Architecture](docs/semantic-search-architecture.md)** + **[Vector Sync UI](docs/user-guide/vector-sync-ui.md)**
+- **[Login Flow v2](docs/login-flow-v2.md)** — recommended multi-user setup (architecture, env vars, scope reference, troubleshooting)
+- **[Troubleshooting](docs/troubleshooting.md)** · **[Comparison with Context Agent](docs/comparison-context-agent.md)**
 
 ## Contributing
 
@@ -241,13 +138,6 @@ Contributions are welcome!
 ## Security
 
 [![MseeP.ai Security Assessment](https://mseep.net/pr/cbcoutinho-nextcloud-mcp-server-badge.png)](https://mseep.ai/app/cbcoutinho-nextcloud-mcp-server)
-
-This project takes security seriously:
-- Production-ready Basic Auth with app-specific passwords
-- OAuth2/OIDC support (experimental, requires upstream patches)
-- Per-user access tokens
-- No credential storage in OAuth mode
-- Regular security assessments
 
 Found a security issue? **Do not open a public GitHub issue.** Use GitHub's [private vulnerability reporting](https://github.com/cbcoutinho/nextcloud-mcp-server/security/advisories/new), or email **security@astrolabecloud.com** if you can't use GitHub. See [SECURITY.md](./SECURITY.md) for details.
 

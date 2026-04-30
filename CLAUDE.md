@@ -300,7 +300,7 @@ Use `scripts/sqlitequery.py` for all SQLite queries:
 
 **For detailed architecture, see:**
 - `docs/comparison-context-agent.md` - Overall architecture
-- `docs/oauth-architecture.md` - OAuth integration patterns
+- `docs/login-flow-v2.md` - OAuth/OIDC integration patterns and architecture
 - `docs/ADR-004-progressive-consent.md` - Progressive consent implementation
 
 **Core Components**:
@@ -509,9 +509,8 @@ docker compose exec app php occ user_oidc:provider keycloak
 **Credentials**: admin/admin (Keycloak realm: `nextcloud-mcp`)
 
 **For detailed Keycloak setup, see**:
-- `docs/oauth-setup.md` - OAuth configuration
+- `docs/login-flow-v2.md` - OAuth/OIDC configuration (set `OIDC_DISCOVERY_URL` to a Keycloak realm)
 - `docs/ADR-002-vector-sync-authentication.md` - Offline access architecture
-- `docs/audience-validation-setup.md` - Token audience validation
 - `docs/keycloak-multi-client-validation.md` - Realm-level validation
 
 ## Integration Testing with Docker

@@ -1,5 +1,8 @@
 # OAuth Impersonation Investigation Findings
 
+> [!WARNING]
+> **Deprecated — historical reference only.** This document describes the direct-OAuth-to-Nextcloud / token-exchange architecture that was retired in favor of Login Flow v2. See [ADR-022](ADR-022-deployment-mode-consolidation.md) and [Login Flow v2](login-flow-v2.md) for the current approach. Retained because [ADR-002](ADR-002-vector-sync-authentication.md) still cites this investigation for context.
+
 **Date**: 2025-11-02
 **Last Updated**: 2025-11-02 (Token Exchange Resolution)
 **Status**: Implementation Complete - Token Exchange Working

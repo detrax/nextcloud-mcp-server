@@ -6,7 +6,7 @@ This guide covers installing the Nextcloud MCP server on your system.
 
 - **Python 3.11+** - Check with `python3 --version`
 - **Access to a Nextcloud instance** - Self-hosted or cloud-hosted
-- **Administrator access** (for OAuth setup) - Required to install OIDC app
+- **Administrator access** *(optional)* - Only needed to customise app-password policies in Nextcloud settings; not required for any deployment mode (single-user, multi-user BasicAuth, or Login Flow v2)
 
 ## Installation Methods
 
@@ -132,7 +132,7 @@ docker-compose up -d
 After installation:
 
 1. **Configure the server** - See [Configuration Guide](configuration.md)
-2. **Set up authentication** - See [OAuth Setup Guide](oauth-setup.md) or [Authentication](authentication.md)
+2. **Set up authentication** - See [Authentication](authentication.md) (multi-user deployments: see [Login Flow v2](login-flow-v2.md))
 3. **Run the server** - See [Running the Server](running.md)
 
 ## Updating
@@ -211,5 +211,6 @@ sudo docker run ...
 ## See Also
 
 - [Configuration Guide](configuration.md) - Environment variables and settings
-- [OAuth Setup Guide](oauth-setup.md) - OAuth authentication setup
+- [Authentication](authentication.md) - Authentication modes comparison
+- [Login Flow v2](login-flow-v2.md) - Recommended multi-user setup
 - [Running the Server](running.md) - Starting and managing the server
