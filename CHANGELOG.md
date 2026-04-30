@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.75.2 (2026-04-30)
+
+### Fix
+
+- **webhooks**: escape webhook_uri, lazy logging, document 401 header omission
+- **webhooks**: escape HTML in error responses, compare bearer as bytes
+- **webhooks**: authenticate deliveries via WEBHOOK_SECRET; review nits
+- **webhooks**: wire receiver to vector sync queue and fix registered URI
+
+### Refactor
+
+- **webhooks**: bound queue waits, route URLs through dynaconf
+- **webhooks**: address PR review on auth-pass
+
 ## v0.75.1 (2026-04-30)
 
 ### Fix
