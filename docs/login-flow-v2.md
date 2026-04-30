@@ -11,15 +11,24 @@ Two authentication legs, each with a different mechanism:
 ```
 ┌─────────────────┐    OAuth/OIDC    ┌──────────────────┐   App password    ┌─────────────────┐
 │   MCP Client    │ ───────────────> │   MCP Server     │ ────────────────> │   Nextcloud     │
-│ (Claude, etc.)  │   (mcp:* scopes) │  (OIDC RP of NC, │   (Basic Auth)    │ (NC 16+,        │
-│                 │                  │  OAuth facade,   │                   │  OIDC issuer)   │
+│ (Claude, etc.)  │   (mcp:* scopes) │  (OIDC RP of IdP,│   (Basic Auth)    │   (NC 16+)      │
+│                 │                  │  OAuth facade,   │                   │                 │
 │                 │                  │  app-pwd holder) │                   │                 │
 └─────────────────┘                  └──────────────────┘                   └─────────────────┘
+                                              ▲
+                                              │ OIDC discovery + token validation
+                                              ▼
+                                     ┌─────────────────┐
+                                     │ OIDC Provider   │
+                                     │ (Nextcloud OIDC,│
+                                     │  Keycloak,      │
+                                     │  AWS Cognito,…) │
+                                     └─────────────────┘
 ```
 
-- **MCP client → MCP server**: OAuth 2.1 with PKCE. The MCP server is **not** a standalone OAuth issuer — it acts as an OIDC relying party of Nextcloud OIDC and exposes an OAuth facade in front of it. Tokens are signed by Nextcloud's OIDC provider, validated by the MCP server against Nextcloud's JWKS, and carry `mcp:*` scopes that gate which tools the user can call.
-- **MCP server → Nextcloud (auth leg)**: The MCP server registers itself with Nextcloud's OIDC provider via static `NEXTCLOUD_OIDC_CLIENT_ID`/`SECRET` (preferred) or RFC 7591 DCR (fallback). This relationship is used for OIDC discovery, JWKS retrieval, and token validation — *not* for proxying client tokens to Nextcloud APIs.
-- **MCP server → Nextcloud (data leg)**: Per-user **app password** obtained via Nextcloud's native [Login Flow v2](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html#login-flow-v2). Sent as HTTP Basic Auth.
+- **MCP client → MCP server**: OAuth 2.1 with PKCE. The MCP server is **not** a standalone OAuth issuer — it acts as an OIDC relying party of a configurable identity provider and exposes an OAuth facade in front of it. The IdP is selected by `OIDC_DISCOVERY_URL` (defaults to Nextcloud's built-in OIDC); Keycloak, AWS Cognito, and other OIDC-compliant IdPs are also supported. Tokens are signed by that IdP, validated by the MCP server against the IdP's JWKS, and carry `mcp:*` scopes that gate which tools the user can call.
+- **MCP server → IdP (auth leg)**: The MCP server registers itself with the IdP via static `NEXTCLOUD_OIDC_CLIENT_ID`/`SECRET` (preferred — these are generic OIDC client credentials despite the Nextcloud-flavored naming, and work with any OIDC provider) or RFC 7591 DCR (fallback). This relationship is used for OIDC discovery, JWKS retrieval, and token validation.
+- **MCP server → Nextcloud (data leg)**: Per-user **app password** obtained via Nextcloud's native [Login Flow v2](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html#login-flow-v2). Sent as HTTP Basic Auth. Login Flow v2 is always Nextcloud's protocol regardless of which IdP authenticated the MCP client.
 
 App passwords appear in **Settings → Security → Devices & Sessions** in Nextcloud and can be revoked by the user at any time.
 
@@ -34,16 +43,22 @@ Scope enforcement happens at the MCP server layer (defense-in-depth). See [Scope
 ### Required Environment Variables
 
 ```bash
-# Nextcloud connection
+# Nextcloud connection (data leg — always Nextcloud, regardless of which IdP authenticates clients)
 NEXTCLOUD_HOST=https://your.nextcloud.example.com
 
-# OIDC client credentials for the MCP server's relying-party relationship with Nextcloud OIDC.
-# Preferred path: register a client in Nextcloud admin → OIDC and set these. If both are unset
-# and Nextcloud advertises a `registration_endpoint`, the server falls back to RFC 7591 DCR.
+# IdP selection (auth leg). Defaults to NEXTCLOUD_HOST/.well-known/openid-configuration
+# (i.e. Nextcloud's built-in OIDC). Override to point at Keycloak, AWS Cognito, etc.
+# OIDC_DISCOVERY_URL=https://keycloak.example.com/realms/myrealm/.well-known/openid-configuration
+
+# OIDC client credentials for the MCP server's relying-party relationship with the IdP.
+# These are generic OIDC client credentials — they work with any OIDC provider, despite
+# the Nextcloud-flavored env-var names. Preferred path: register a client in your IdP
+# (Nextcloud admin → OIDC, Keycloak realm → Clients, etc.) and set these. If both are
+# unset and the IdP advertises a `registration_endpoint`, the server falls back to RFC 7591 DCR.
 NEXTCLOUD_OIDC_CLIENT_ID=<your-client-id>
 NEXTCLOUD_OIDC_CLIENT_SECRET=<your-client-secret>
 
-# Enable Login Flow v2 (per-user app-password provisioning for the MCP→Nextcloud data leg)
+# Enable Login Flow v2 (per-user Nextcloud app-password provisioning for the data leg)
 ENABLE_LOGIN_FLOW=true
 
 # App-password storage (required for persistence across restarts)
@@ -54,6 +69,8 @@ TOKEN_ENCRYPTION_KEY=<fernet-key>          # see "Generating an encryption key" 
 NEXTCLOUD_MCP_SERVER_URL=https://mcp.example.com
 NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.example.com  # Public URL of Nextcloud
 ```
+
+When using an external IdP (Keycloak, Cognito, etc.), see [Keycloak Multi-Client Token Validation](keycloak-multi-client-validation.md) for how Nextcloud's `user_oidc` app handles realm-level token validation if you also federate Nextcloud's own login through the same IdP.
 
 ### Generating an Encryption Key
 
@@ -196,13 +213,13 @@ Implementation: [`nextcloud_mcp_server/auth/scope_authorization.py`](../nextclou
 
 ## OAuth Endpoints
 
-When `--oauth` is enabled, the MCP server exposes OAuth 2.1 endpoints. **These endpoints front Nextcloud OIDC** — discovery metadata, token issuance, and JWKS still come from Nextcloud; the MCP server is not a standalone OAuth issuer.
+When `--oauth` is enabled, the MCP server exposes OAuth 2.1 endpoints. **These endpoints front the configured IdP** — discovery metadata, token issuance, and JWKS still come from whichever provider is selected via `OIDC_DISCOVERY_URL` (Nextcloud OIDC by default, or Keycloak / Cognito / etc.); the MCP server is not a standalone OAuth issuer.
 
 | Endpoint | RFC | Purpose |
 |----------|-----|---------|
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 | Server metadata (advertises Nextcloud OIDC as the upstream issuer) |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 | Server metadata (advertises the configured IdP as the upstream issuer) |
 | `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 | PRM — advertises supported scopes (dynamically discovered from `@require_scopes`) |
-| `POST /register` | RFC 7591 | Dynamic Client Registration (for MCP clients; see also `NEXTCLOUD_OIDC_CLIENT_ID/SECRET` for the MCP server's own RP credentials) |
+| `POST /register` | RFC 7591 | Dynamic Client Registration (for MCP clients; see also `NEXTCLOUD_OIDC_CLIENT_ID/SECRET` for the MCP server's own RP credentials with the IdP) |
 | `PUT/DELETE /register/{client_id}` | RFC 7592 | Client management with registration token |
 | `GET /authorize` | RFC 6749 | Authorization endpoint (PKCE required, S256) |
 | `POST /token` | RFC 6749 | Token endpoint |

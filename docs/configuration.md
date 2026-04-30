@@ -636,7 +636,7 @@ uv run nextcloud-mcp-server --no-oauth \
 
 Pick the mode that matches your deployment topology — there is no single "always" answer:
 
-- **Multi-user / hosted** — use [Login Flow v2](login-flow-v2.md). The MCP server registers with Nextcloud OIDC via static `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET` (preferred) or RFC 7591 DCR (fallback); MCP clients authenticate via OAuth 2.1 + PKCE; per-user Nextcloud access is stored as encrypted app passwords.
+- **Multi-user / hosted** — use [Login Flow v2](login-flow-v2.md). The MCP server registers with the chosen IdP (Nextcloud's built-in OIDC by default; Keycloak, AWS Cognito, etc. via `OIDC_DISCOVERY_URL`) using static `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET` (generic OIDC creds, preferred) or RFC 7591 DCR (fallback). MCP clients authenticate via OAuth 2.1 + PKCE; per-user Nextcloud access is stored as encrypted app passwords.
 - **Internal multi-user** — Multi-User BasicAuth pass-through (clients send `Authorization: Basic` headers) is fully supported when users manage their own Nextcloud credentials.
 - **Personal / self-hosted** — Single-User BasicAuth with a Nextcloud app password is the simplest production setup.
 

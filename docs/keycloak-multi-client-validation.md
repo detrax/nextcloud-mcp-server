@@ -1,7 +1,6 @@
 # Keycloak Multi-Client Token Validation
 
-> [!WARNING]
-> **Deprecated — historical reference only.** This document describes the direct-OAuth-to-Nextcloud architecture that was retired in favor of Login Flow v2. See [ADR-022](ADR-022-deployment-mode-consolidation.md) and [Login Flow v2](login-flow-v2.md) for the current approach. Retained because [ADR-002](ADR-002-vector-sync-authentication.md) and `CLAUDE.md` still cite this investigation for context.
+> **Applies to: External IdP mode (Keycloak / Cognito / etc.).** When the MCP server is configured against an external OIDC provider via `OIDC_DISCOVERY_URL`, Nextcloud's `user_oidc` app validates incoming Bearer tokens at the **realm level** — see findings below. This is independent of [Login Flow v2](login-flow-v2.md), which governs the per-user app-password leg.
 
 ## Executive Summary
 

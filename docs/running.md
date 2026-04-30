@@ -26,7 +26,7 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
 
-> **Note:** Under `--oauth` the MCP server is an **OIDC relying party of Nextcloud OIDC** (validates client Bearer tokens against Nextcloud's JWKS) and exposes an OAuth facade for MCP clients. It does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords ([Login Flow v2](login-flow-v2.md)) or Basic Auth credentials.
+> **Note:** Under `--oauth` the MCP server is an **OIDC relying party of a configurable IdP** (Nextcloud's built-in OIDC by default; Keycloak, AWS Cognito, etc. via `OIDC_DISCOVERY_URL`) and exposes an OAuth facade for MCP clients. Bearer tokens are validated against the IdP's JWKS. The MCP server does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords ([Login Flow v2](login-flow-v2.md)) or Basic Auth credentials.
 
 The server will start on `http://127.0.0.1:8000` by default.
 
@@ -38,12 +38,12 @@ The server will start on `http://127.0.0.1:8000` by default.
 
 #### OAuth Mode (`--oauth`, recommended for multi-user)
 
-The `--oauth` flag turns on the OAuth/OIDC layer. In this mode the MCP server is an **OIDC relying party of Nextcloud OIDC** (it validates Bearer tokens against Nextcloud's JWKS) and exposes an OAuth facade for MCP clients. [Login Flow v2](login-flow-v2.md) is layered on top to acquire and store per-user Nextcloud app passwords.
+The `--oauth` flag turns on the OAuth/OIDC layer. In this mode the MCP server is an **OIDC relying party of a configurable IdP** — Nextcloud's built-in OIDC by default, or any OIDC-compliant provider (Keycloak, AWS Cognito, Auth0, etc.) selected via `OIDC_DISCOVERY_URL`. The MCP server validates Bearer tokens against that IdP's JWKS and exposes an OAuth facade for MCP clients. [Login Flow v2](login-flow-v2.md) is layered on top to acquire and store per-user Nextcloud app passwords for the data leg.
 
-The MCP server registers itself with Nextcloud's OIDC provider in one of two ways:
+The MCP server registers itself with the IdP in one of two ways:
 
-- **Static client (preferred)** — set `NEXTCLOUD_OIDC_CLIENT_ID` and `NEXTCLOUD_OIDC_CLIENT_SECRET` in `.env` (matching a client you registered in Nextcloud admin → OIDC).
-- **Dynamic Client Registration (fallback)** — if the static creds aren't set and Nextcloud advertises a `registration_endpoint`, the server self-registers via RFC 7591.
+- **Static client (preferred)** — set `NEXTCLOUD_OIDC_CLIENT_ID` and `NEXTCLOUD_OIDC_CLIENT_SECRET` in `.env` (matching a client you registered in your IdP — Nextcloud admin → OIDC, Keycloak realm → Clients, etc.). These env-var names predate multi-IdP support; they hold generic OIDC client credentials.
+- **Dynamic Client Registration (fallback)** — if the static creds aren't set and the IdP advertises a `registration_endpoint`, the server self-registers via RFC 7591.
 
 ```bash
 # OAuth with static (pre-registered) client — preferred

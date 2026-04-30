@@ -122,10 +122,10 @@ Astrolabe                     MCP Server                   Nextcloud OIDC
 ```
 
 **Key characteristics:**
-- Astrolabe has its own OAuth client registered in Nextcloud
-- Tokens are validated by the MCP server using Nextcloud OIDC JWKS
+- Astrolabe has its own OAuth client registered with the IdP (Nextcloud OIDC by default; Keycloak / Cognito / etc. when configured via `OIDC_DISCOVERY_URL`)
+- Tokens are validated by the MCP server using the IdP's JWKS (Nextcloud OIDC's JWKS by default; whichever IdP is configured otherwise)
 - Authorization check: `token.sub == requested_resource_owner`
-- The same JWKS-based validation path applies under [Login Flow v2](#3-login-flow-v2) — the MCP server is an OIDC relying party of Nextcloud OIDC in both modes; Login Flow v2 only changes the MCP→Nextcloud credential leg (per-user app passwords).
+- The same JWKS-based validation path applies under [Login Flow v2](#3-login-flow-v2) — the MCP server is an OIDC relying party of the configured IdP in both modes; Login Flow v2 only changes the MCP→Nextcloud credential leg (per-user app passwords).
 
 ---
 
@@ -158,9 +158,9 @@ MCP Client                    MCP Server                   Nextcloud
 
 **Key characteristics:**
 - MCP client authenticates to MCP server via OAuth 2.1 + PKCE
-- MCP server is an **OIDC relying party of Nextcloud OIDC** + an OAuth facade for MCP clients (RFC 7591 DCR for MCP-client registration; the server's own RP credentials come from `NEXTCLOUD_OIDC_CLIENT_ID/SECRET`, with DCR fallback). Tokens are signed by Nextcloud OIDC and validated against Nextcloud's JWKS.
+- MCP server is an **OIDC relying party of a configurable IdP** (Nextcloud OIDC by default; Keycloak, AWS Cognito, etc. via `OIDC_DISCOVERY_URL`) + an OAuth facade for MCP clients. RFC 7591 DCR is used to register the MCP-client side; the server's own RP credentials come from `NEXTCLOUD_OIDC_CLIENT_ID/SECRET` (generic OIDC creds), with DCR fallback. Tokens are signed by the chosen IdP and validated against that IdP's JWKS.
 - `mcp:*` scopes (e.g. `mcp:notes.read`, `mcp:notes.write`) gate tool access
-- Per-user app password obtained via Login Flow v2 and stored encrypted in SQLite
+- Per-user app password obtained via Login Flow v2 (Nextcloud-specific protocol, used regardless of which IdP authenticated the client) and stored encrypted in SQLite
 - App passwords appear in Nextcloud's **Settings → Security → Devices & Sessions** and are user-revocable
 
 #### First-Use Provisioning (one-time per user)
