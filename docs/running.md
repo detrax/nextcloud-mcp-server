@@ -17,7 +17,7 @@ Before running the server:
 Start the server using Docker:
 
 ```bash
-# Login Flow v2 / OAuth issuer mode (--oauth, recommended for multi-user)
+# OAuth mode (--oauth, recommended for multi-user; required by Login Flow v2)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
@@ -26,7 +26,7 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
 
-> **Note:** The `--oauth` flag turns on the OAuth-issuer layer used by [Login Flow v2](login-flow-v2.md), the recommended multi-user mode. It does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords (Login Flow v2) or Basic Auth credentials.
+> **Note:** Under `--oauth` the MCP server is an **OIDC relying party of Nextcloud OIDC** (validates client Bearer tokens against Nextcloud's JWKS) and exposes an OAuth facade for MCP clients. It does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords ([Login Flow v2](login-flow-v2.md)) or Basic Auth credentials.
 
 The server will start on `http://127.0.0.1:8000` by default.
 
@@ -36,20 +36,31 @@ The server will start on `http://127.0.0.1:8000` by default.
 
 ### Basic Docker Run
 
-#### Login Flow v2 / OAuth issuer mode (`--oauth`)
+#### OAuth Mode (`--oauth`, recommended for multi-user)
 
-Recommended for multi-user deployments. The MCP server acts as the OAuth issuer for MCP clients; per-user Nextcloud access is obtained via [Login Flow v2](login-flow-v2.md) and stored as encrypted app passwords.
+The `--oauth` flag turns on the OAuth/OIDC layer. In this mode the MCP server is an **OIDC relying party of Nextcloud OIDC** (it validates Bearer tokens against Nextcloud's JWKS) and exposes an OAuth facade for MCP clients. [Login Flow v2](login-flow-v2.md) is layered on top to acquire and store per-user Nextcloud app passwords.
+
+The MCP server registers itself with Nextcloud's OIDC provider in one of two ways:
+
+- **Static client (preferred)** — set `NEXTCLOUD_OIDC_CLIENT_ID` and `NEXTCLOUD_OIDC_CLIENT_SECRET` in `.env` (matching a client you registered in Nextcloud admin → OIDC).
+- **Dynamic Client Registration (fallback)** — if the static creds aren't set and Nextcloud advertises a `registration_endpoint`, the server self-registers via RFC 7591.
 
 ```bash
-# OAuth issuer with DCR (Dynamic Client Registration)
+# OAuth with static (pre-registered) client — preferred
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  -e NEXTCLOUD_OIDC_CLIENT_ID=abc123 \
+  -e NEXTCLOUD_OIDC_CLIENT_SECRET=xyz789 \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth with auto-registration (DCR) — used when static creds are absent
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# OAuth issuer on a custom port
+# OAuth on a custom port
 docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# OAuth issuer with specific apps only
+# OAuth with specific apps only
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth \
   --enable-app notes --enable-app calendar

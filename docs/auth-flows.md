@@ -125,8 +125,7 @@ Astrolabe                     MCP Server                   Nextcloud OIDC
 - Astrolabe has its own OAuth client registered in Nextcloud
 - Tokens are validated by the MCP server using Nextcloud OIDC JWKS
 - Authorization check: `token.sub == requested_resource_owner`
-
-> **Note:** The diagram and JWKS source above apply to **Multi-User BasicAuth**, where Nextcloud is the IdP. Under [Login Flow v2](#3-login-flow-v2) the MCP server is its own OAuth issuer and validates Bearer tokens against its **own** JWKS (or via local introspection of opaque tokens) — Nextcloud's JWKS is not involved on the MCP-client → MCP-server leg. See the Login Flow v2 section below.
+- The same JWKS-based validation path applies under [Login Flow v2](#3-login-flow-v2) — the MCP server is an OIDC relying party of Nextcloud OIDC in both modes; Login Flow v2 only changes the MCP→Nextcloud credential leg (per-user app passwords).
 
 ---
 
@@ -159,7 +158,7 @@ MCP Client                    MCP Server                   Nextcloud
 
 **Key characteristics:**
 - MCP client authenticates to MCP server via OAuth 2.1 + PKCE
-- MCP server is the OAuth authorization server (DCR via RFC 7591)
+- MCP server is an **OIDC relying party of Nextcloud OIDC** + an OAuth facade for MCP clients (RFC 7591 DCR for MCP-client registration; the server's own RP credentials come from `NEXTCLOUD_OIDC_CLIENT_ID/SECRET`, with DCR fallback). Tokens are signed by Nextcloud OIDC and validated against Nextcloud's JWKS.
 - `mcp:*` scopes (e.g. `mcp:notes.read`, `mcp:notes.write`) gate tool access
 - Per-user app password obtained via Login Flow v2 and stored encrypted in SQLite
 - App passwords appear in Nextcloud's **Settings → Security → Devices & Sessions** and are user-revocable

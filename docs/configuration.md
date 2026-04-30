@@ -636,7 +636,7 @@ uv run nextcloud-mcp-server --no-oauth \
 
 Pick the mode that matches your deployment topology — there is no single "always" answer:
 
-- **Multi-user / hosted** — use [Login Flow v2](login-flow-v2.md). MCP clients authenticate via OAuth 2.1 + DCR (no pre-configured client to manage); per-user Nextcloud access is stored as encrypted app passwords.
+- **Multi-user / hosted** — use [Login Flow v2](login-flow-v2.md). The MCP server registers with Nextcloud OIDC via static `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET` (preferred) or RFC 7591 DCR (fallback); MCP clients authenticate via OAuth 2.1 + PKCE; per-user Nextcloud access is stored as encrypted app passwords.
 - **Internal multi-user** — Multi-User BasicAuth pass-through (clients send `Authorization: Basic` headers) is fully supported when users manage their own Nextcloud credentials.
 - **Personal / self-hosted** — Single-User BasicAuth with a Nextcloud app password is the simplest production setup.
 
@@ -648,13 +648,20 @@ In all modes:
 
 ### For Docker
 
-- Under Login Flow v2, mount the encrypted app-password store as a volume so per-user provisioning survives container restarts:
-  ```bash
-  docker run -v $(pwd)/data:/app/data --env-file .env \
-    ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
-  ```
-  (`TOKEN_STORAGE_DB=/app/data/tokens.db` in `.env`.)
-- Use Docker secrets for sensitive values in production (`TOKEN_ENCRYPTION_KEY`, `NEXTCLOUD_PASSWORD`, etc.)
+Mount **two** volumes for OAuth-mode deployments:
+
+- `/app/.oauth` — DCR-registered MCP-client state (only used when DCR is the chosen registration path; harmless to mount otherwise).
+- `/app/data` — encrypted app-password store under Login Flow v2 (`TOKEN_STORAGE_DB=/app/data/tokens.db`).
+
+```bash
+docker run \
+  -v $(pwd)/.oauth:/app/.oauth \
+  -v $(pwd)/data:/app/data \
+  --env-file .env \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+```
+
+Use Docker secrets for sensitive values in production (`TOKEN_ENCRYPTION_KEY`, `NEXTCLOUD_OIDC_CLIENT_SECRET`, `NEXTCLOUD_PASSWORD`, etc.)
 
 ---
 
