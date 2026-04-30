@@ -1,5 +1,7 @@
 # Keycloak Multi-Client Token Validation
 
+> **Applies to: External IdP mode (Keycloak / Cognito / etc.).** When the MCP server is configured against an external OIDC provider via `OIDC_DISCOVERY_URL`, Nextcloud's `user_oidc` app validates incoming Bearer tokens at the **realm level** — see findings below. This is independent of [Login Flow v2](login-flow-v2.md), which governs the per-user app-password leg.
+
 ## Executive Summary
 
 **Question**: Can Nextcloud's `user_oidc` app (configured with client A) validate bearer tokens from client B in the same Keycloak realm?

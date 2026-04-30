@@ -8,7 +8,7 @@ Before running the server:
 
 1. **Install the server** - See [Installation Guide](installation.md)
 2. **Configure environment** - See [Configuration Guide](configuration.md)
-3. **Set up authentication** - See [OAuth Setup](oauth-setup.md) or [Authentication](authentication.md)
+3. **Set up authentication** - See [Authentication](authentication.md) (multi-user deployments: see [Login Flow v2](login-flow-v2.md))
 
 ---
 
@@ -17,14 +17,16 @@ Before running the server:
 Start the server using Docker:
 
 ```bash
-# OAuth mode (recommended)
+# OAuth mode (--oauth, recommended for multi-user; required by Login Flow v2)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
-# BasicAuth mode
+# BasicAuth mode (single-user or multi-user pass-through)
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
 ```
+
+> **Note:** Under `--oauth` the MCP server is an **OIDC relying party of a configurable IdP** (Nextcloud's built-in OIDC by default; Keycloak, AWS Cognito, etc. via `OIDC_DISCOVERY_URL`) and exposes an OAuth facade for MCP clients. Bearer tokens are validated against the IdP's JWKS. The MCP server does **not** forward client OAuth tokens to Nextcloud — Nextcloud is always reached via per-user app passwords ([Login Flow v2](login-flow-v2.md)) or Basic Auth credentials.
 
 The server will start on `http://127.0.0.1:8000` by default.
 
@@ -34,21 +36,28 @@ The server will start on `http://127.0.0.1:8000` by default.
 
 ### Basic Docker Run
 
-#### OAuth Mode (Recommended)
+#### OAuth Mode (`--oauth`, recommended for multi-user)
+
+The `--oauth` flag turns on the OAuth/OIDC layer. In this mode the MCP server is an **OIDC relying party of a configurable IdP** — Nextcloud's built-in OIDC by default, or any OIDC-compliant provider (Keycloak, AWS Cognito, Auth0, etc.) selected via `OIDC_DISCOVERY_URL`. The MCP server validates Bearer tokens against that IdP's JWKS and exposes an OAuth facade for MCP clients. [Login Flow v2](login-flow-v2.md) is layered on top to acquire and store per-user Nextcloud app passwords for the data leg.
+
+The MCP server registers itself with the IdP in one of two ways:
+
+- **Static client (preferred)** — set `NEXTCLOUD_OIDC_CLIENT_ID` and `NEXTCLOUD_OIDC_CLIENT_SECRET` in `.env` (matching a client you registered in your IdP — Nextcloud admin → OIDC, Keycloak realm → Clients, etc.). These env-var names predate multi-IdP support; they hold generic OIDC client credentials.
+- **Dynamic Client Registration (fallback)** — if the static creds aren't set and the IdP advertises a `registration_endpoint`, the server self-registers via RFC 7591.
 
 ```bash
-# OAuth with auto-registration
-docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
-  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
-
-# OAuth with custom port
-docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
-  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
-
-# OAuth with pre-configured client
+# OAuth with static (pre-registered) client — preferred
 docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   -e NEXTCLOUD_OIDC_CLIENT_ID=abc123 \
   -e NEXTCLOUD_OIDC_CLIENT_SECRET=xyz789 \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth with auto-registration (DCR) — used when static creds are absent
+docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
+  ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
+
+# OAuth on a custom port
+docker run -p 127.0.0.1:8080:8000 --env-file .env --rm \
   ghcr.io/cbcoutinho/nextcloud-mcp-server:latest --oauth
 
 # OAuth with specific apps only
@@ -57,7 +66,7 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env --rm \
   --enable-app notes --enable-app calendar
 ```
 
-#### BasicAuth Mode (Legacy)
+#### BasicAuth Mode
 
 ```bash
 # BasicAuth (requires NEXTCLOUD_USERNAME/PASSWORD in .env)
@@ -84,8 +93,6 @@ docker run -p 127.0.0.1:8000:8000 --env-file .env \
 Create `docker-compose.yml`:
 
 ```yaml
-version: '3.8'
-
 services:
   mcp:
     image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
@@ -360,8 +367,6 @@ docker-compose logs -f mcp
 For production deployments, use Docker Compose with the recommended settings:
 
 ```yaml
-version: '3.8'
-
 services:
   mcp:
     image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
@@ -425,6 +430,7 @@ See [Troubleshooting OAuth](troubleshooting.md) for detailed OAuth troubleshooti
 ## See Also
 
 - [Configuration Guide](configuration.md) - Environment variables
-- [OAuth Setup](oauth-setup.md) - OAuth authentication setup
+- [Authentication](authentication.md) - Authentication modes
+- [Login Flow v2](login-flow-v2.md) - Recommended multi-user setup
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
 - [Installation](installation.md) - Installing the server

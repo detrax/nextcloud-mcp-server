@@ -2,7 +2,7 @@
 
 This guide covers common issues and solutions for the Nextcloud MCP server.
 
-> **OAuth-specific issues?** See the dedicated [OAuth Troubleshooting Guide](oauth-troubleshooting.md) for OAuth authentication problems, OIDC discovery issues, token validation failures, and more.
+> **Multi-user / Login Flow v2 issues?** See the [Login Flow v2 troubleshooting section](login-flow-v2.md#troubleshooting) for app-password storage, provisioning loops, and OAuth issuer problems.
 
 > **Upgrading from v0.57.x?** See the [Configuration Migration Guide](configuration-migration-v2.md) for help with new variable names.
 
@@ -69,7 +69,7 @@ ENABLE_BACKGROUND_OPERATIONS=true
 
 **Symptom:**
 ```
-ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, oauth_single_audience, oauth_token_exchange
+ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basic, multi_user_basic, login_flow_v2
 ```
 
 **Cause:** Invalid value for `MCP_DEPLOYMENT_MODE`.
@@ -77,11 +77,9 @@ ValueError: Invalid MCP_DEPLOYMENT_MODE: 'oauth'. Valid values: single_user_basi
 **Solution:**
 Use one of the valid mode values:
 ```bash
-# Correct values:
-MCP_DEPLOYMENT_MODE=single_user_basic          # Single-user with username/password
-MCP_DEPLOYMENT_MODE=multi_user_basic           # Multi-user BasicAuth
-MCP_DEPLOYMENT_MODE=oauth_single_audience      # OAuth (recommended)
-MCP_DEPLOYMENT_MODE=oauth_token_exchange       # OAuth with token exchange
+MCP_DEPLOYMENT_MODE=single_user_basic   # Single-user with username/app password
+MCP_DEPLOYMENT_MODE=multi_user_basic    # Multi-user BasicAuth pass-through
+MCP_DEPLOYMENT_MODE=login_flow_v2       # Multi-user via Login Flow v2 (recommended)
 ```
 
 Or remove `MCP_DEPLOYMENT_MODE` to use automatic detection.
@@ -92,7 +90,7 @@ Or remove `MCP_DEPLOYMENT_MODE` to use automatic detection.
 
 **Symptom:**
 ```
-Error: [oauth_single_audience] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
+Error: [login_flow_v2] TOKEN_ENCRYPTION_KEY is required when ENABLE_SEMANTIC_SEARCH is enabled
 ```
 
 **Cause:** In multi-user modes, semantic search automatically enables background operations, which require encrypted token storage.
@@ -107,8 +105,6 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 # Add to .env:
 TOKEN_ENCRYPTION_KEY=<generated-key>
 TOKEN_STORAGE_DB=/app/data/tokens.db
-NEXTCLOUD_OIDC_CLIENT_ID=your-client-id       # Required for app password retrieval
-NEXTCLOUD_OIDC_CLIENT_SECRET=your-client-secret
 ```
 
 **Why this happens:**
@@ -143,234 +139,19 @@ The server will use the new name and ignore the old one, but it's cleaner to rem
 
 ---
 
-## OAuth Issues (Quick Reference)
+## Multi-User / Login Flow v2 Issues
 
-### Issue: "OAuth mode requires NEXTCLOUD_HOST environment variable"
+For multi-user deployment issues — provisioning loops, app-password storage, OAuth issuer endpoints, scope enforcement — see the [Login Flow v2 troubleshooting section](login-flow-v2.md#troubleshooting).
 
-**Cause:** The `NEXTCLOUD_HOST` environment variable is not set or empty.
-
-**Solution:**
+### Switching deployment modes
 
 ```bash
-# Ensure NEXTCLOUD_HOST is set in your .env file
-echo "NEXTCLOUD_HOST=https://your.nextcloud.instance.com" >> .env
-
-# Load environment variables
-export $(grep -v '^#' .env | xargs)
-
-# Verify it's set
-echo $NEXTCLOUD_HOST
+# To Single-User BasicAuth: set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD
+# To Multi-User BasicAuth pass-through: ENABLE_MULTI_USER_BASIC_AUTH=true (no creds)
+# To Login Flow v2: ENABLE_LOGIN_FLOW=true (no creds)
 ```
 
----
-
-### Issue: "OAuth mode requires either client credentials OR dynamic client registration"
-
-**Cause:** The required Nextcloud OIDC apps are either:
-1. Not installed (both `oidc` and `user_oidc` apps are required)
-2. Don't have dynamic client registration enabled
-3. Aren't providing a registration endpoint
-
-**Solution:**
-
-**Option 1: Enable dynamic client registration**
-
-1. Verify **both** OIDC apps are installed:
-   - Navigate to Nextcloud **Apps** → **Security**
-   - Install **"OIDC"** (OIDC Identity Provider app) if not present
-   - Install **"OpenID Connect user backend"** (user_oidc app) if not present
-
-2. Enable dynamic client registration:
-   - Go to **Settings** → **OIDC** (Administration)
-   - Enable "Allow dynamic client registration"
-
-3. Configure Bearer token validation:
-   ```bash
-   # Required for user_oidc app to validate tokens
-   php occ config:system:set user_oidc oidc_provider_bearer_validation --value=true --type=boolean
-   ```
-
-3. Verify the registration endpoint exists:
-   ```bash
-   curl https://your.nextcloud.instance.com/.well-known/openid-configuration | jq '.registration_endpoint'
-   # Should output: "https://your.nextcloud.instance.com/apps/oidc/register"
-   ```
-
-**Option 2: Provide pre-configured credentials**
-
-Register a client and add credentials to `.env`:
-
-```bash
-# On your Nextcloud server
-php occ oidc:create \
-  --name="Nextcloud MCP Server" \
-  --type=confidential \
-  --redirect-uri="http://localhost:8000/oauth/callback"
-
-# Add to .env
-echo "NEXTCLOUD_OIDC_CLIENT_ID=<from-output>" >> .env
-echo "NEXTCLOUD_OIDC_CLIENT_SECRET=<from-output>" >> .env
-```
-
-See [OAuth Setup Guide](oauth-setup.md) for detailed instructions.
-
----
-
-### Issue: "Stored client has expired"
-
-**Cause:** Dynamically registered OAuth clients expire (default: 1 hour).
-
-**Solution:**
-
-**Option 1: Restart the server** (automatic re-registration)
-
-```bash
-# Server checks credentials at startup and re-registers if expired
-uv run nextcloud-mcp-server --oauth
-```
-
-**Option 2: Use pre-configured credentials** (recommended for production)
-
-```bash
-# Register permanent client via Nextcloud CLI
-php occ oidc:create \
-  --name="Nextcloud MCP Server" \
-  --type=confidential \
-  --redirect-uri="http://localhost:8000/oauth/callback"
-
-# Add to .env
-NEXTCLOUD_OIDC_CLIENT_ID=<from-output>
-NEXTCLOUD_OIDC_CLIENT_SECRET=<from-output>
-```
-
-**Option 3: Increase expiration time**
-
-```bash
-# Via Nextcloud occ command (default: 3600 seconds)
-php occ config:app:set oidc expire_time --value "86400"  # 24 hours
-```
-
----
-
-### Issue: "HTTP 401 Unauthorized" when calling Nextcloud APIs
-
-**Cause:** OAuth Bearer tokens may not work with certain Nextcloud endpoints due to session handling in the CORS middleware.
-
-**Background:** The `user_oidc` app's CORS middleware interferes with Bearer token authentication for non-OCS endpoints (like Notes API). This affects app-specific APIs but not OCS APIs.
-
-**Solution:**
-
-A patch for the `user_oidc` app is required to fix Bearer token support. See [oauth2-bearer-token-session-issue.md](oauth2-bearer-token-session-issue.md) for:
-- Detailed explanation of the issue
-- Patch to apply to the `user_oidc` app
-- Link to upstream pull request
-
-**Affected endpoints:**
-- Notes API (`/apps/notes/api/`)
-- Other app-specific endpoints
-
-**Unaffected endpoints:**
-- OCS APIs (`/ocs/v2.php/`)
-- Capabilities endpoint
-
----
-
-### Issue: "Permission denied" or "Database is locked" when accessing OAuth client storage
-
-**Cause:** The server cannot access the SQLite database for OAuth client credentials storage.
-
-**Solution:**
-
-```bash
-# Check database directory permissions
-ls -la data/
-
-# Ensure directory is writable
-chmod 755 data/
-
-# Check if database file exists and has correct permissions
-ls -la data/tokens.db
-chmod 644 data/tokens.db
-
-# For Docker deployments, ensure volume is mounted correctly:
-# docker-compose.yml should have:
-#   volumes:
-#     - ./data:/app/data
-```
-
----
-
-### Issue: "OIDC discovery failed" or "Cannot reach OIDC discovery endpoint"
-
-**Cause:** The server cannot reach the Nextcloud OIDC discovery endpoint.
-
-**Solution:**
-
-1. Verify the Nextcloud URL is correct:
-   ```bash
-   echo $NEXTCLOUD_HOST
-   # Should be the full URL: https://your.nextcloud.instance.com
-   ```
-
-2. Test the discovery endpoint manually:
-   ```bash
-   curl https://your.nextcloud.instance.com/.well-known/openid-configuration
-   # Should return JSON with OIDC configuration
-   ```
-
-3. Check network connectivity:
-   ```bash
-   ping your.nextcloud.instance.com
-   ```
-
-4. Verify **both** OIDC apps are installed and enabled in Nextcloud:
-   - `oidc` - OIDC Identity Provider
-   - `user_oidc` - OpenID Connect user backend
-
-5. Check firewall rules if using Docker
-
----
-
-### Switching Between OAuth and BasicAuth
-
-#### To switch from BasicAuth to OAuth:
-
-```bash
-# 1. Remove or comment out USERNAME/PASSWORD in .env
-sed -i 's/^NEXTCLOUD_USERNAME/#NEXTCLOUD_USERNAME/' .env
-sed -i 's/^NEXTCLOUD_PASSWORD/#NEXTCLOUD_PASSWORD/' .env
-
-# 2. Ensure NEXTCLOUD_HOST is set
-grep NEXTCLOUD_HOST .env
-
-# 3. Restart server with OAuth
-export $(grep -v '^#' .env | xargs)
-uv run nextcloud-mcp-server --oauth
-```
-
-#### To switch from OAuth to BasicAuth:
-
-```bash
-# 1. Add USERNAME/PASSWORD to .env
-echo "NEXTCLOUD_USERNAME=your-username" >> .env
-echo "NEXTCLOUD_PASSWORD=your-password" >> .env
-
-# 2. Restart server (BasicAuth auto-detected, or use --no-oauth)
-export $(grep -v '^#' .env | xargs)
-uv run nextcloud-mcp-server --no-oauth
-```
-
----
-
-### For More OAuth Help
-
-See the dedicated **[OAuth Troubleshooting Guide](oauth-troubleshooting.md)** for:
-- Bearer token authentication failures
-- PKCE validation errors
-- Token validation issues
-- Client registration problems
-- Advanced OAuth debugging
-- And much more...
+Restart the server after changing modes. The active mode is logged at startup; you can also set `MCP_DEPLOYMENT_MODE` explicitly to fail fast if the env vars don't match.
 
 ---
 
@@ -529,7 +310,7 @@ kill <pid>
 
 ### Issue: Server crashes or restarts frequently
 
-**Cause:** Various issues including memory limits, uncaught exceptions, or OAuth token expiration.
+**Cause:** Various issues including memory limits or uncaught exceptions.
 
 **Solution:**
 
@@ -553,44 +334,37 @@ kill <pid>
    docker-compose up -d
    ```
 
-4. **Check for OAuth credential expiration** (if using dynamic registration):
-   - See ["Stored client has expired"](#issue-stored-client-has-expired) above
-
 ---
 
 ## Connection Issues
 
 ### Issue: MCP client can't authenticate
 
-**Cause:** OAuth flow failing or credentials invalid.
+**Cause:** Auth flow failing or credentials invalid.
 
 **Solution:**
 
-**For OAuth:**
-1. Verify OAuth is configured correctly:
-   ```bash
-   uv run nextcloud-mcp-server --oauth --log-level debug
-   # Look for "OAuth initialization complete"
-   ```
-
-2. Check that OIDC app is accessible:
-   ```bash
-   curl https://your.nextcloud.instance.com/.well-known/openid-configuration
-   ```
-
-3. Verify MCP_SERVER_URL matches your setup:
-   ```bash
-   echo $NEXTCLOUD_MCP_SERVER_URL
-   # Should match the URL clients use to connect
-   ```
-
-**For BasicAuth:**
+**For BasicAuth modes:**
 1. Verify credentials work:
    ```bash
    curl -u "$NEXTCLOUD_USERNAME:$NEXTCLOUD_PASSWORD" \
      "$NEXTCLOUD_HOST/ocs/v2.php/cloud/capabilities" \
      -H "OCS-APIRequest: true"
    ```
+
+**For Login Flow v2 mode:**
+1. Verify the server starts the OAuth issuer:
+   ```bash
+   uv run nextcloud-mcp-server --oauth --log-level debug
+   # Look for "OAuth initialization complete"
+   ```
+
+2. Verify `NEXTCLOUD_MCP_SERVER_URL` matches the URL clients use to connect:
+   ```bash
+   echo $NEXTCLOUD_MCP_SERVER_URL
+   ```
+
+3. See [Login Flow v2 troubleshooting](login-flow-v2.md#troubleshooting) for app-password and provisioning issues.
 
 ---
 
@@ -610,14 +384,9 @@ kill <pid>
    - Ensure the authenticated user has access to the resources
    - Check sharing permissions for shared resources
 
-3. **Test API directly:**
+3. **Test API directly with Basic Auth:**
    ```bash
-   # Test Notes API
    curl -u "$NEXTCLOUD_USERNAME:$NEXTCLOUD_PASSWORD" \
-     "$NEXTCLOUD_HOST/apps/notes/api/v1/notes"
-
-   # Test with OAuth Bearer token
-   curl -H "Authorization: Bearer $TOKEN" \
      "$NEXTCLOUD_HOST/apps/notes/api/v1/notes"
    ```
 
@@ -640,30 +409,21 @@ uv run nextcloud-mcp-server --log-level debug
 
 Review the logs for specific error messages.
 
-### 2. Verify OIDC Configuration (OAuth mode)
+### 2. Test Nextcloud Connectivity
 
 ```bash
-# Check OIDC discovery
-curl https://your.nextcloud.instance.com/.well-known/openid-configuration
+# Verify Nextcloud is reachable from the MCP server
+curl -I "$NEXTCLOUD_HOST/status.php"
 
-# Check registration endpoint exists
-curl https://your.nextcloud.instance.com/.well-known/openid-configuration | jq '.registration_endpoint'
-```
-
-### 3. Test Nextcloud API Access
-
-```bash
-# Test OCS API (should work with OAuth)
-curl -H "Authorization: Bearer $TOKEN" \
+# With Basic Auth (Single-User or Multi-User BasicAuth modes)
+curl -u "$NEXTCLOUD_USERNAME:$NEXTCLOUD_PASSWORD" \
   "$NEXTCLOUD_HOST/ocs/v2.php/cloud/capabilities?format=json" \
   -H "OCS-APIRequest: true"
-
-# Test app API (may need patch - see oauth2-bearer-token-session-issue.md)
-curl -H "Authorization: Bearer $TOKEN" \
-  "$NEXTCLOUD_HOST/apps/notes/api/v1/notes"
 ```
 
-### 4. Check Versions
+For Login Flow v2 mode, see [Login Flow v2 troubleshooting](login-flow-v2.md#troubleshooting).
+
+### 3. Check Versions
 
 ```bash
 # MCP Server version
@@ -675,13 +435,13 @@ python3 --version
 # Nextcloud version (check in admin panel)
 ```
 
-### 5. Open an Issue
+### 4. Open an Issue
 
 If problems persist, open an issue on the [GitHub repository](https://github.com/cbcoutinho/nextcloud-mcp-server/issues) with:
 
 - **Server logs** (with `--log-level debug`)
 - **Nextcloud version**
-- **OIDC app version** (if using OAuth)
+- **Deployment mode** (single_user_basic / multi_user_basic / login_flow_v2)
 - **Error messages**
 - **Steps to reproduce**
 - **Environment details** (OS, Python version, Docker vs local)
@@ -690,9 +450,7 @@ If problems persist, open an issue on the [GitHub repository](https://github.com
 
 ## See Also
 
-- **[OAuth Troubleshooting](oauth-troubleshooting.md)** - Dedicated OAuth troubleshooting guide
-- [OAuth Setup Guide](oauth-setup.md) - OAuth configuration
-- [OAuth Architecture](oauth-architecture.md) - How OAuth works
-- [Upstream Status](oauth-upstream-status.md) - Required patches and upstream PRs
+- [Authentication](authentication.md) - Authentication modes
+- [Login Flow v2](login-flow-v2.md) - Multi-user setup, scope reference, troubleshooting FAQ
 - [Configuration](configuration.md) - Environment variables
 - [Running the Server](running.md) - Server options
