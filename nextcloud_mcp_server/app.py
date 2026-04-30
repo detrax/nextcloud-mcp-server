@@ -348,6 +348,10 @@ class OAuthAppContext:
     server_client_id: Optional[str] = (
         None  # MCP server's OAuth client ID (static or DCR)
     )
+    document_send_stream: Optional[MemoryObjectSendStream] = None
+    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
+    shutdown_event: Optional[anyio.Event] = None
+    scanner_wake_event: Optional[anyio.Event] = None
 
 
 class BasicAuthMiddleware:
@@ -1180,6 +1184,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     oauth_client=oauth_client,
                     oauth_provider=oauth_provider,
                     server_client_id=client_id,
+                    document_send_stream=_vector_sync_state.document_send_stream,
+                    document_receive_stream=_vector_sync_state.document_receive_stream,
+                    shutdown_event=_vector_sync_state.shutdown_event,
+                    scanner_wake_event=_vector_sync_state.scanner_wake_event,
                 )
             finally:
                 logger.info("Shutting down MCP server")
