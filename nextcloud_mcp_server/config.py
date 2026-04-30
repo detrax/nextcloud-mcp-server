@@ -53,6 +53,13 @@ _DEFAULTS: dict[str, Any] = {
     # None = ephemeral per-process tempfile (see get_token_db_path()).
     # Set TOKEN_STORAGE_DB to persist tokens across restarts.
     "token_storage_db": None,
+    # Webhook delivery authentication (ADR-010): when set, registrations
+    # tell NC to add `Authorization: Bearer <secret>` to webhook deliveries
+    # and the receiver rejects unauthenticated requests.
+    "webhook_secret": None,
+    # Internal URL override for webhook registration; wins over
+    # NEXTCLOUD_MCP_SERVER_URL when set (e.g. split internal/external URLs).
+    "webhook_internal_url": None,
     # Vector sync
     "vector_sync_scan_interval": 300,
     "vector_sync_processor_workers": 3,
@@ -430,6 +437,17 @@ class Settings:
     token_encryption_key: str | None = None
     token_storage_db: str | None = None
 
+    # Webhook delivery authentication (ADR-010).
+    # When set, the registrar passes Authorization: Bearer <secret> as the
+    # webhook authData and the receiver validates the same header on each
+    # delivery. When unset, registration uses authMethod="none" and the
+    # receiver accepts unauthenticated POSTs (backward-compatible).
+    webhook_secret: str | None = None
+    # Internal URL override for webhook registration. Highest-priority
+    # source for the URL we register with NC (above
+    # nextcloud_mcp_server_url and the docker-detection fallback).
+    webhook_internal_url: str | None = None
+
     # Vector sync settings (ADR-007)
     vector_sync_enabled: bool = False
     vector_sync_scan_interval: int = 300  # seconds (5 minutes)
@@ -767,6 +785,9 @@ def get_settings() -> Settings:
         # Token and webhook storage settings
         "token_encryption_key": "TOKEN_ENCRYPTION_KEY",
         "token_storage_db": "TOKEN_STORAGE_DB",
+        # Webhook auth (ADR-010)
+        "webhook_secret": "WEBHOOK_SECRET",
+        "webhook_internal_url": "WEBHOOK_INTERNAL_URL",
         # Vector sync settings (ADR-007)
         "vector_sync_scan_interval": "VECTOR_SYNC_SCAN_INTERVAL",
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",

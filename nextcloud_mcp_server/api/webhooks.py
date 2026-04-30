@@ -18,6 +18,7 @@ from nextcloud_mcp_server.api.management import (
     extract_bearer_token,
     validate_token_and_get_user,
 )
+from nextcloud_mcp_server.auth.webhook_routes import webhook_auth_pair
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
 
 from ..http import nextcloud_httpx_client
@@ -36,7 +37,7 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/apps: {e}")
+        logger.warning("Unauthorized access to /api/v1/apps: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -85,7 +86,7 @@ async def get_installed_apps(request: Request) -> JSONResponse:
             return JSONResponse({"apps": apps})
 
     except Exception as e:
-        logger.error(f"Error getting installed apps for user {user_id}: {e}")
+        logger.error("Error getting installed apps for user %s: %s", user_id, e)
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -106,7 +107,7 @@ async def list_webhooks(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
+        logger.warning("Unauthorized access to /api/v1/webhooks: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -141,7 +142,7 @@ async def list_webhooks(request: Request) -> JSONResponse:
             return JSONResponse({"webhooks": webhooks})
 
     except Exception as e:
-        logger.error(f"Error listing webhooks for user {user_id}: {e}")
+        logger.error("Error listing webhooks for user %s: %s", user_id, e)
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -169,7 +170,7 @@ async def create_webhook(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
+        logger.warning("Unauthorized access to /api/v1/webhooks: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -213,16 +214,22 @@ async def create_webhook(request: Request) -> JSONResponse:
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,
         ) as client:
-            # Use WebhooksClient to create webhook
+            # Use WebhooksClient to create webhook. Inject auth headers when
+            # WEBHOOK_SECRET is configured so deliveries are authenticated.
             webhooks_client = WebhooksClient(client, user_id)
+            auth_method, auth_data = webhook_auth_pair()
             webhook_data = await webhooks_client.create_webhook(
-                event=event, uri=uri, event_filter=event_filter
+                event=event,
+                uri=uri,
+                event_filter=event_filter,
+                auth_method=auth_method,
+                auth_data=auth_data,
             )
 
             return JSONResponse({"webhook": webhook_data})
 
     except Exception as e:
-        logger.error(f"Error creating webhook for user {user_id}: {e}")
+        logger.error("Error creating webhook for user %s: %s", user_id, e)
         return JSONResponse(
             {
                 "error": "Internal error",
@@ -243,7 +250,7 @@ async def delete_webhook(request: Request) -> JSONResponse:
         # Validate OAuth token and extract user
         user_id, validated = await validate_token_and_get_user(request)
     except Exception as e:
-        logger.warning(f"Unauthorized access to /api/v1/webhooks: {e}")
+        logger.warning("Unauthorized access to /api/v1/webhooks: %s", e)
         return JSONResponse(
             {
                 "error": "Unauthorized",
@@ -294,7 +301,7 @@ async def delete_webhook(request: Request) -> JSONResponse:
             return JSONResponse({"success": True, "message": "Webhook deleted"})
 
     except Exception as e:
-        logger.error(f"Error deleting webhook for user {user_id}: {e}")
+        logger.error("Error deleting webhook for user %s: %s", user_id, e)
         return JSONResponse(
             {
                 "error": "Internal error",

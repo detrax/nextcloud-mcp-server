@@ -135,8 +135,11 @@ async def test_create_webhook_with_filter(webhooks_client, mocker):
 
 
 @pytest.mark.unit
-async def test_create_webhook_with_auth_headers(webhooks_client, mocker):
-    """Test creating a webhook with authentication headers."""
+async def test_create_webhook_with_static_headers(webhooks_client, mocker):
+    """Static request headers (the ``headers`` field) ride on every delivery
+    independently of ``authData``. NC's webhook_listeners app accepts only
+    ``authMethod="none"`` or ``"header"`` — pre-existing tests previously
+    referenced ``"bearer"`` which is not a valid value."""
     mock_response = mocker.Mock()
     mock_response.json.return_value = {
         "ocs": {
@@ -144,7 +147,7 @@ async def test_create_webhook_with_auth_headers(webhooks_client, mocker):
                 "id": 125,
                 "uri": "http://example.com/webhook",
                 "event": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-                "authMethod": "bearer",
+                "authMethod": "header",
             }
         }
     }
@@ -156,17 +159,51 @@ async def test_create_webhook_with_auth_headers(webhooks_client, mocker):
     webhook_data = await webhooks_client.create_webhook(
         event="OCP\\Files\\Events\\Node\\NodeCreatedEvent",
         uri="http://example.com/webhook",
-        auth_method="bearer",
-        headers={"Authorization": "Bearer secret-token"},
+        auth_method="header",
+        headers={"X-Trace-Id": "trace-123"},
     )
 
     assert webhook_data["id"] == 125
-    assert webhook_data["authMethod"] == "bearer"
+    assert webhook_data["authMethod"] == "header"
 
     mock_make_request.assert_called_once()
     call_args = mock_make_request.call_args
-    assert call_args[1]["json"]["authMethod"] == "bearer"
-    assert call_args[1]["json"]["headers"] == {"Authorization": "Bearer secret-token"}
+    assert call_args[1]["json"]["authMethod"] == "header"
+    assert call_args[1]["json"]["headers"] == {"X-Trace-Id": "trace-123"}
+
+
+@pytest.mark.unit
+async def test_create_webhook_with_auth_data(webhooks_client, mocker):
+    """``auth_data`` lands in the OCS body as ``authData`` so NC encrypts
+    the credentials at-rest and merges them in at delivery time."""
+    mock_response = mocker.Mock()
+    mock_response.json.return_value = {
+        "ocs": {
+            "data": {
+                "id": 126,
+                "uri": "http://example.com/webhook",
+                "event": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+                "authMethod": "header",
+            }
+        }
+    }
+
+    mock_make_request = mocker.patch.object(
+        WebhooksClient, "_make_request", return_value=mock_response
+    )
+
+    await webhooks_client.create_webhook(
+        event="OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+        uri="http://example.com/webhook",
+        auth_method="header",
+        auth_data={"Authorization": "Bearer supersecret"},
+    )
+
+    call_args = mock_make_request.call_args
+    assert call_args[1]["json"]["authMethod"] == "header"
+    assert call_args[1]["json"]["authData"] == {"Authorization": "Bearer supersecret"}
+    # The static `headers` field must NOT be set when only auth_data is passed.
+    assert "headers" not in call_args[1]["json"]
 
 
 @pytest.mark.unit

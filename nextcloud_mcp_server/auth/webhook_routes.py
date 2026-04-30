@@ -4,6 +4,7 @@ Provides browser-based endpoints for admin users to manage webhook configuration
 using preset templates. Only accessible to Nextcloud administrators.
 """
 
+import html
 import logging
 import os
 
@@ -14,8 +15,10 @@ from starlette.responses import HTMLResponse
 
 from nextcloud_mcp_server.auth.permissions import is_nextcloud_admin
 from nextcloud_mcp_server.client.webhooks import WebhooksClient
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.server.webhook_presets import (
     WEBHOOK_PRESETS,
+    WebhookPreset,
     filter_presets_by_installed_apps,
     get_preset,
 )
@@ -70,50 +73,106 @@ async def _get_installed_apps(http_client: httpx.AsyncClient) -> list[str]:
         app_keys = set(capabilities.keys()) - core_keys
         return sorted(app_keys)
     except Exception as e:
-        logger.warning(f"Failed to get installed apps from capabilities: {e}")
+        logger.warning("Failed to get installed apps from capabilities: %s", e)
         return []
 
 
 def _get_webhook_uri() -> str:
     """Get the webhook endpoint URI for this MCP server.
 
-    This function determines the correct webhook URL based on the environment:
-    1. Uses WEBHOOK_INTERNAL_URL if explicitly set (highest priority)
-    2. Detects Docker environment and uses internal service name
-    3. Falls back to NEXTCLOUD_MCP_SERVER_URL
+    Priority (highest first):
+      1. ``WEBHOOK_INTERNAL_URL`` — explicit override, e.g. for split
+         internal/external URLs (read via dynaconf, so env vars and
+         settings.toml both work).
+      2. ``NEXTCLOUD_MCP_SERVER_URL`` — the configured public URL set on
+         cloud deployments (ECS, k8s); the URL NC must POST to.
+      3. ``/.dockerenv`` (or podman / ``DOCKER_CONTAINER=true``) → internal
+         docker-compose service name. Only relevant when no public URL is
+         configured — i.e. local dev where MCP and NC share a Docker
+         network.
+      4. ``http://localhost:8000`` — last-resort fallback.
 
-    In Docker environments, Nextcloud needs to reach the MCP service using
-    the internal Docker network hostname (e.g., http://mcp:8000), not localhost.
-
-    Returns:
-        Full webhook endpoint URL accessible from Nextcloud
+    Note: ECS Fargate containers also expose ``/.dockerenv``. Without this
+    priority order, cloud deployments would silently register an internal
+    docker-compose hostname (e.g. ``http://mcp:8000``) that NC cannot
+    resolve, dropping every webhook delivery.
     """
-    # Explicit override (highest priority)
-    webhook_url = os.getenv("WEBHOOK_INTERNAL_URL")
-    if webhook_url:
-        return f"{webhook_url}/webhooks/nextcloud"
+    settings = get_settings()
+    if settings.webhook_internal_url:
+        return f"{settings.webhook_internal_url}/webhooks/nextcloud"
 
-    # Detect Docker environment
-    # Check for common Docker indicators
+    if settings.nextcloud_mcp_server_url:
+        return f"{settings.nextcloud_mcp_server_url}/webhooks/nextcloud"
+
+    # Docker-environment markers stay on os.getenv: they're container-runtime
+    # signals (filesystem markers, optional service-name override) rather
+    # than user-facing config that would belong in settings.toml.
     is_docker = (
-        os.path.exists("/.dockerenv")  # Docker container marker file
-        or os.path.exists("/run/.containerenv")  # Podman marker
-        or os.getenv("DOCKER_CONTAINER") == "true"  # Explicit flag
+        os.path.exists("/.dockerenv")
+        or os.path.exists("/run/.containerenv")
+        or os.getenv("DOCKER_CONTAINER") == "true"
     )
-
     if is_docker:
-        # In Docker, use internal service name from NEXTCLOUD_MCP_SERVICE_NAME
-        # or default to 'mcp' (docker-compose service name)
         service_name = os.getenv("NEXTCLOUD_MCP_SERVICE_NAME", "mcp")
         port = os.getenv("NEXTCLOUD_MCP_PORT", "8000")
         logger.debug(
-            f"Docker environment detected, using internal URL: http://{service_name}:{port}"
+            "Docker environment detected, using internal URL: http://%s:%s",
+            service_name,
+            port,
         )
         return f"http://{service_name}:{port}/webhooks/nextcloud"
 
-    # Fallback to configured server URL (for non-Docker deployments)
-    server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
-    return f"{server_url}/webhooks/nextcloud"
+    return "http://localhost:8000/webhooks/nextcloud"
+
+
+def webhook_auth_pair() -> tuple[str, dict[str, str] | None]:
+    """Resolve ``(auth_method, auth_data)`` for new webhook registrations.
+
+    When ``WEBHOOK_SECRET`` is set, returns
+    ``("header", {"Authorization": f"Bearer {secret}"})`` so NC stores the
+    credential encrypted at-rest and forwards it on every delivery. When
+    unset, returns ``("none", None)`` — backward-compatible with deployments
+    that haven't rolled out webhook auth yet.
+
+    Shared by both registration call sites: the ``/app/webhooks`` preset
+    flow and the Astrolabe-facing ``/api/v1/webhooks`` endpoint.
+    """
+    secret = get_settings().webhook_secret
+    if not secret:
+        return ("none", None)
+    return ("header", {"Authorization": f"Bearer {secret}"})
+
+
+async def _register_preset_webhooks(
+    webhooks_client: WebhooksClient,
+    preset: WebhookPreset,
+    webhook_uri: str,
+) -> list[int]:
+    """Register every event in a preset against a single MCP webhook URI.
+
+    Threads the resolved ``(auth_method, auth_data)`` from
+    :func:`webhook_auth_pair` onto each registration call so deliveries
+    carry the configured ``Authorization`` header (when ``WEBHOOK_SECRET``
+    is set) or fall through to ``authMethod="none"`` (backward-compatible
+    when it's not).
+
+    Extracted from :func:`enable_webhook_preset` so the auth-threading
+    behaviour is testable without standing up a Starlette app.
+    """
+    auth_method, auth_data = webhook_auth_pair()
+    registered_ids: list[int] = []
+    for event_config in preset["events"]:
+        webhook_data = await webhooks_client.create_webhook(
+            event=event_config["event"],
+            uri=webhook_uri,
+            event_filter=event_config["filter"] if event_config["filter"] else None,
+            auth_method=auth_method,
+            auth_data=auth_data,
+        )
+        webhook_id = webhook_data["id"]
+        registered_ids.append(webhook_id)
+        logger.info("Registered webhook %s for %s", webhook_id, event_config["event"])
+    return registered_ids
 
 
 async def _get_authenticated_client(request: Request) -> httpx.AsyncClient:
@@ -228,7 +287,7 @@ async def _get_enabled_presets(
         return enabled_presets
 
     except Exception as e:
-        logger.error(f"Failed to list webhooks: {e}")
+        logger.error("Failed to list webhooks: %s", e)
         return {}
 
 
@@ -273,7 +332,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
 
         # Get installed apps to filter presets
         installed_apps = await _get_installed_apps(http_client)
-        logger.debug(f"Installed apps: {installed_apps}")
+        logger.debug("Installed apps: %s", installed_apps)
 
         # Get currently enabled presets (from database or API)
         enabled_presets = await _get_enabled_presets(webhooks_client, storage)
@@ -335,7 +394,7 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
         <div class="info-message">
             <p><strong>About Webhooks</strong></p>
             <p>Webhooks enable real-time synchronization by notifying this server when content changes in Nextcloud.</p>
-            <p><strong>Endpoint:</strong> <code>{webhook_uri}</code></p>
+            <p><strong>Endpoint:</strong> <code>{html.escape(webhook_uri)}</code></p>
         </div>
 
         <h3 style="margin-top: 30px;">Available Presets</h3>
@@ -348,12 +407,12 @@ async def webhook_management_pane(request: Request) -> HTMLResponse:
         return HTMLResponse(content=html_content)
 
     except Exception as e:
-        logger.error(f"Error loading webhook management pane: {e}", exc_info=True)
+        logger.error("Error loading webhook management pane: %s", e, exc_info=True)
         return HTMLResponse(
             content=f"""
             <div class="warning">
                 <p><strong>Error Loading Webhooks</strong></p>
-                <p>{str(e)}</p>
+                <p>{html.escape(str(e))}</p>
             </div>
             """,
             status_code=500,
@@ -389,24 +448,16 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         preset = get_preset(preset_id)
         if not preset:
             return HTMLResponse(
-                content=f'<div class="warning">Unknown preset: {preset_id}</div>',
+                content=f'<div class="warning">Unknown preset: {html.escape(preset_id)}</div>',
                 status_code=404,
             )
 
         # Register webhooks
         webhooks_client = WebhooksClient(http_client, username)
         webhook_uri = _get_webhook_uri()
-        registered_ids = []
-
-        for event_config in preset["events"]:
-            webhook_data = await webhooks_client.create_webhook(
-                event=event_config["event"],
-                uri=webhook_uri,
-                event_filter=event_config["filter"] if event_config["filter"] else None,
-            )
-            webhook_id = webhook_data["id"]
-            registered_ids.append(webhook_id)
-            logger.info(f"Registered webhook {webhook_id} for {event_config['event']}")
+        registered_ids = await _register_preset_webhooks(
+            webhooks_client, preset, webhook_uri
+        )
 
         # Persist webhook IDs to database
         storage = _get_storage(request)
@@ -414,7 +465,9 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
             for webhook_id in registered_ids:
                 await storage.store_webhook(webhook_id, preset_id)
             logger.info(
-                f"Persisted {len(registered_ids)} webhook(s) for preset '{preset_id}' to database"
+                "Persisted %d webhook(s) for preset '%s' to database",
+                len(registered_ids),
+                preset_id,
             )
 
         # Return updated card
@@ -446,9 +499,9 @@ async def enable_webhook_preset(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error(f"Failed to enable preset {preset_id}: {e}", exc_info=True)
+        logger.error("Failed to enable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
-            content=f'<div class="warning">Failed to enable preset: {str(e)}</div>',
+            content=f'<div class="warning">Failed to enable preset: {html.escape(str(e))}</div>',
             status_code=500,
         )
 
@@ -482,7 +535,7 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
         preset = get_preset(preset_id)
         if not preset:
             return HTMLResponse(
-                content=f'<div class="warning">Unknown preset: {preset_id}</div>',
+                content=f'<div class="warning">Unknown preset: {html.escape(preset_id)}</div>',
                 status_code=404,
             )
 
@@ -500,13 +553,15 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
 
         for webhook_id in webhook_ids:
             await webhooks_client.delete_webhook(webhook_id)
-            logger.info(f"Deleted webhook {webhook_id} from preset {preset_id}")
+            logger.info("Deleted webhook %s from preset %s", webhook_id, preset_id)
 
         # Remove from database
         if storage:
             deleted_count = await storage.clear_preset_webhooks(preset_id)
             logger.info(
-                f"Removed {deleted_count} webhook(s) for preset '{preset_id}' from database"
+                "Removed %d webhook(s) for preset '%s' from database",
+                deleted_count,
+                preset_id,
             )
 
         # Return updated card
@@ -536,8 +591,8 @@ async def disable_webhook_preset(request: Request) -> HTMLResponse:
         )
 
     except Exception as e:
-        logger.error(f"Failed to disable preset {preset_id}: {e}", exc_info=True)
+        logger.error("Failed to disable preset %s: %s", preset_id, e, exc_info=True)
         return HTMLResponse(
-            content=f'<div class="warning">Failed to disable preset: {str(e)}</div>',
+            content=f'<div class="warning">Failed to disable preset: {html.escape(str(e))}</div>',
             status_code=500,
         )
