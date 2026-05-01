@@ -32,6 +32,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -144,16 +145,15 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Sort combined results by score
                 all_results.sort(key=lambda r: r.score, reverse=True)
 
-            # Note: BM25HybridSearchAlgorithm already deduplicates at chunk level
-            # (doc_id, doc_type, chunk_start, chunk_end), which allows multiple
-            # chunks from the same document while preventing duplicate chunks.
-            # No additional deduplication needed here - multiple chunks per document
-            # are valuable for RAG contexts.
-            # Qdrant already filters by user_id for multi-tenant isolation.
-            # Sampling tool will verify access when fetching full content.
-            search_results = all_results[
-                :limit
-            ]  # Final limit after chunk-level dedup in algorithm
+            # ADR-019: Verify-on-read. The vector index is a recall layer;
+            # Nextcloud is the source of truth for access. Filter out ghost
+            # records (deleted/unshared docs not yet reconciled by webhooks)
+            # BEFORE trimming to `limit`, so we don't lose accessible results
+            # to the limit slot that ghosts would otherwise occupy. We also
+            # run this BEFORE context expansion to avoid re-fetching docs that
+            # are about to be dropped.
+            verified_results = await verify_search_results(client, all_results)
+            search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response
             results = []
@@ -414,9 +414,11 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        # 4. Fetch full content for notes in parallel (also verifies access)
-        # Use anyio task group for concurrent fetching with semaphore to prevent
-        # connection pool exhaustion
+        # 4. Fetch full content for notes in parallel.
+        # Access verification has already happened upstream in
+        # nc_semantic_search via verify_search_results (ADR-019), so any
+        # exception here is a sub-second race (doc deleted between
+        # verification and this fetch) — drop the result in that case.
         client = await get_client(ctx)
         accessible_results = [None] * len(search_response.results)
         full_contents = [None] * len(search_response.results)
@@ -431,7 +433,6 @@ def configure_semantic_tools(mcp: FastMCP):
                 if result.doc_type == "note":
                     try:
                         note = await client.notes.get_note(result.id)
-                        # Note is accessible, store result and full content
                         content = note.get("content", "")
                         accessible_results[index] = result
                         full_contents[index] = content
@@ -440,15 +441,16 @@ def configure_semantic_tools(mcp: FastMCP):
                             f"(length: {len(content)} chars)"
                         )
                     except Exception as e:
-                        # Note might have been deleted or permissions changed
-                        # Leave as None to filter out later
+                        # Race window after verify_search_results — drop result.
                         logger.debug(
-                            f"Note {result.id} not accessible: {e}. "
-                            f"Excluding from results."
+                            "Note %s disappeared between verification and "
+                            "content fetch: %s. Excluding from results.",
+                            result.id,
+                            e,
                         )
                 else:
-                    # Non-note document types (future: calendar, deck, files)
-                    # For now, keep them with excerpts
+                    # Non-note types (file, news_item, deck_card) keep the
+                    # excerpt — already access-verified upstream.
                     accessible_results[index] = result
                     # full_contents[index] remains None (will use excerpt)
 

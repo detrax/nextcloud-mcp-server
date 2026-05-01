@@ -48,8 +48,10 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
 
-        Returns unverified results from Qdrant. Access verification should be
-        performed separately at the final output stage using verify_search_results().
+        Returns unverified results from Qdrant. Access verification is
+        performed separately at the server tool layer via
+        ``nextcloud_mcp_server.search.verification.verify_search_results``
+        (see ADR-019).
 
         Deduplicates by (doc_id, doc_type, chunk_start_offset, chunk_end_offset)
         to show multiple chunks from the same document while avoiding duplicate chunks.
