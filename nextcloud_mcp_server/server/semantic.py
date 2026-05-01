@@ -804,11 +804,15 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         try:
-            # Get document receive stream from lifespan context
+            # Get document receive stream from lifespan context. Direct
+            # attribute access matches the eviction_task_group pattern at
+            # ``nc_semantic_search`` (see comment there): both AppContext
+            # and OAuthAppContext define ``document_receive_stream``, so a
+            # missing attribute is a typo that should fail loudly. The
+            # value itself can legitimately be ``None`` before sync starts,
+            # which the check below handles.
             lifespan_ctx = ctx.request_context.lifespan_context
-            document_receive_stream = getattr(
-                lifespan_ctx, "document_receive_stream", None
-            )
+            document_receive_stream = lifespan_ctx.document_receive_stream
 
             if document_receive_stream is None:
                 logger.debug(

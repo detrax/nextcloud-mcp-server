@@ -335,7 +335,10 @@ async def _verify_news_items(
             # If the News API itself is gone (app disabled, user lost access),
             # treat *all* requested items as inaccessible. Eviction will reclaim.
             if _is_definitive_404_or_403(e):
-                logger.info(
+                # News app commonly disabled/uninstalled — debug-level keeps
+                # this off operator dashboards; transient errors below stay
+                # at warning because they're unexpected.
+                logger.debug(
                     "News API returned %s for user %s; treating all %d news_items as inaccessible",
                     e.response.status_code,
                     client.username,

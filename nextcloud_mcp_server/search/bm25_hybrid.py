@@ -208,7 +208,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             for result in search_response.points:
                 if result.payload is None:
                     continue
-                # doc_id can be int (notes) or str (files - file paths)
+                # doc_id can be int (files) or str (notes/news_items/deck_cards) — see scanner.py
                 doc_id = result.payload["doc_id"]
                 doc_type = result.payload.get("doc_type", "note")
                 chunk_start = result.payload.get("chunk_start_offset")
