@@ -71,8 +71,9 @@ async def _verify_notes(
     async def check(result: SearchResult) -> None:
         doc_id = result.id
         # Parse defensively before the network call so a malformed payload
-        # produces a specific log line, not a generic "unexpected error" from
-        # the catch-all ``except Exception`` below. Mirrors ``_verify_deck_cards``.
+        # produces a specific log line, not a generic "unexpected error"
+        # from the catch-all ``except Exception`` below. The parallel
+        # implementation in ``_verify_deck_cards`` follows the same pattern.
         try:
             note_id_int = int(doc_id)
         except (TypeError, ValueError) as e:
@@ -139,25 +140,19 @@ async def _verify_files(
             try:
                 info = await client.webdav.get_file_info(file_path)
                 if info is None:
-                    # Contract: WebDAVClient.get_file_info returns None in two
-                    # cases — (1) HTTP 404, and (2) a malformed PROPFIND XML
-                    # response (missing <d:response>, <d:propstat>, or <d:prop>
-                    # — see client/webdav.py). Both are treated as
-                    # "inaccessible" and trigger eviction.
-                    #
-                    # Trade-off: a malformed response from a brittle backend
-                    # could cause a *false* eviction. We accept that risk in
-                    # exchange for correctness on real 404s — the index
-                    # self-heals via re-indexing on the next scan, and
-                    # malformed responses are exceedingly rare in practice.
-                    # Distinguishing the two cases would require widening
-                    # get_file_info's return contract; deferred to a future
-                    # change if false evictions become observable.
-                    #
-                    # If the contract ever changes (e.g. 404 raises
-                    # HTTPStatusError like other client methods), the
-                    # `except HTTPStatusError` block below already handles
-                    # it via _is_definitive_404_or_403.
+                    # Contract (see WebDAVClient.get_file_info docstring):
+                    # `None` means a malformed PROPFIND response — an
+                    # ambiguous state, not a definitive 404. Treat as
+                    # transient and KEEP the result rather than evicting.
+                    # Real 404s raise HTTPStatusError and land in the
+                    # _is_definitive_404_or_403 branch below.
+                    logger.warning(
+                        "Malformed PROPFIND response verifying file %s (%s); "
+                        "keeping result (ambiguous state, not a definitive 404)",
+                        doc_id,
+                        file_path,
+                    )
+                    accessible.add(doc_id)
                     return
                 accessible.add(doc_id)
             except HTTPStatusError as e:
@@ -214,8 +209,9 @@ async def _verify_deck_cards(
             return
 
         # Parse defensively before the network call so a malformed payload
-        # produces a specific log line, not a generic "unexpected error" from
-        # the catch-all ``except Exception`` below. Mirrors ``_verify_news_items``.
+        # produces a specific log line, not a generic "unexpected error"
+        # from the catch-all ``except Exception`` below. The parallel
+        # implementation in ``_verify_news_items`` follows the same pattern.
         try:
             board_id_int = int(board_id)
             stack_id_int = int(stack_id)
@@ -272,11 +268,21 @@ async def _verify_news_items(
 
     The Nextcloud News API has no per-item endpoint, so ``news.get_item`` is
     implemented as a fetch-all + filter — which would be O(N × all_items) if
-    called per id. Instead we fetch once and intersect. The semaphore is
-    accepted for signature symmetry but not heavily used (one round-trip total).
+    called per id. Instead we fetch once and intersect. Only one slot of
+    the shared semaphore is consumed per search (rather than one per id),
+    but that slot is held for the full ``get_items`` round-trip; see the
+    in-body comment for the backpressure rationale.
     """
     doc_ids = [r.id for r in results]
 
+    # Semaphore lifetime: this slot is held for the duration of ONE
+    # deduplicated News fetch (≤1 per search), not per-id. That is the
+    # correct backpressure behaviour — a single user's news verification
+    # must not hammer Nextcloud with concurrent fetch-all requests, and
+    # any other verifiers running in parallel for the same search share
+    # the same semaphore. Latency of this fetch is proportional to the
+    # user's full news corpus; see the News caveat in
+    # docs/configuration.md for production guidance.
     async with semaphore:
         try:
             # TODO(perf): if profiling shows this fetch dominates query latency
@@ -426,6 +432,17 @@ async def verify_search_results(
     # out 50 concurrent get_note calls and exhaust the connection pool.
     semaphore = anyio.Semaphore(max_concurrent)
 
+    # Concurrency note: ``accessible_by_type`` is mutated by multiple
+    # ``run_verifier`` tasks running under the task group below. This is
+    # safe without an explicit lock because (a) anyio uses cooperative
+    # multitasking — a task only yields at ``await`` points, never
+    # mid-statement; (b) each task is dispatched once per ``doc_type``
+    # by the loop ``for doc_type, ... in by_type.items()`` further down,
+    # so two tasks never write to the same key; and (c) Python dict key
+    # assignment is not an await point, so two tasks cannot race on the
+    # same write. Adding a lock would be dead weight; using ``anyio.Lock``
+    # here would force serialization on a path that is intentionally
+    # parallel.
     accessible_by_type: dict[str, set[int | str]] = {}
 
     async def run_verifier(doc_type: str, unique_results: list[SearchResult]) -> None:

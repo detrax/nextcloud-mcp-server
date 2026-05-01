@@ -1306,7 +1306,19 @@ class WebDAVClient(BaseNextcloudClient):
 
         Returns:
             File info dictionary with id, name, size, content_type, etc.
-            Returns None if file not found.
+            Returns ``None`` ONLY when the server returned a malformed
+            PROPFIND response (missing ``<d:response>`` /
+            ``<d:propstat>`` / ``<d:prop>`` elements) — an ambiguous
+            state where we cannot tell whether the file exists.
+
+        Raises:
+            HTTPStatusError: For any non-2xx HTTP status, including 404
+                ("not found"). Callers that want to treat 404 as
+                "absent" should catch ``HTTPStatusError`` and check
+                ``e.response.status_code``. This matches the convention
+                of the rest of this client and lets verify-on-read
+                distinguish a definitive absence (HTTP 404) from a
+                brittle response (None).
         """
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
 
@@ -1323,19 +1335,13 @@ class WebDAVClient(BaseNextcloudClient):
   </d:prop>
 </d:propfind>"""
 
-        try:
-            response = await self._client.request(
-                "PROPFIND",
-                webdav_path,
-                headers={"Depth": "0"},
-                content=propfind_body,
-            )
-            response.raise_for_status()
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.debug(f"File not found: {path}")
-                return None
-            raise
+        response = await self._client.request(
+            "PROPFIND",
+            webdav_path,
+            headers={"Depth": "0"},
+            content=propfind_body,
+        )
+        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)

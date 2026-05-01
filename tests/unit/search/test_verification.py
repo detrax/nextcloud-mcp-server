@@ -317,9 +317,11 @@ async def test_verify_files_uses_path_from_metadata(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_files_404_via_get_file_info_drops(mocker):
-    """get_file_info returns None on 404 — that's a definitive drop."""
-    webdav_client = SimpleNamespace(get_file_info=mocker.AsyncMock(return_value=None))
+async def test_verify_files_404_drops(mocker):
+    """get_file_info raising HTTPStatusError(404) is a definitive drop."""
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=_http_error(404))
+    )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
     result = await _verify_files(
@@ -329,6 +331,27 @@ async def test_verify_files_404_via_get_file_info_drops(mocker):
     )
 
     assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_files_malformed_propfind_keeps_result(mocker):
+    """get_file_info returning None means malformed PROPFIND — keep the result.
+
+    Per the contract change in webdav.py: ``None`` is now reserved for the
+    ambiguous "malformed XML" case. Real 404s raise HTTPStatusError. The
+    file verifier must NOT evict on the ambiguous case (we cannot tell
+    whether the file exists), only log a warning and keep the result.
+    """
+    webdav_client = SimpleNamespace(get_file_info=mocker.AsyncMock(return_value=None))
+    client = SimpleNamespace(webdav=webdav_client, username="alice")
+
+    result = await _verify_files(
+        client,
+        [_make_result(123, doc_type="file", metadata={"path": "brittle.txt"})],
+        _sem(),
+    )
+
+    assert result == {123}, "ambiguous None must keep result, not evict"
 
 
 @pytest.mark.unit

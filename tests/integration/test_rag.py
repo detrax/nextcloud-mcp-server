@@ -38,6 +38,7 @@ from typing import Any, AsyncGenerator
 
 import anyio
 import pytest
+from httpx import HTTPStatusError
 from mcp import ClientSession
 
 from nextcloud_mcp_server.providers.base import Provider
@@ -130,10 +131,18 @@ async def indexed_manual_pdf(nc_client, nc_mcp_client):
 
     logger.info(f"Setting up indexed manual PDF: {manual_path}")
 
-    # Get file info to verify file exists and get file ID
-    file_info = await nc_client.webdav.get_file_info(manual_path)
+    # Get file info to verify file exists and get file ID. After the
+    # round-7 contract widening, get_file_info raises HTTPStatusError on
+    # 404 instead of returning None — so wrap and skip on a definitive
+    # not-found.
+    try:
+        file_info = await nc_client.webdav.get_file_info(manual_path)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            pytest.skip(f"Manual PDF not found at '{manual_path}'")
+        raise
     if not file_info:
-        pytest.skip(f"Manual PDF not found at '{manual_path}'")
+        pytest.skip(f"Manual PDF unreadable at '{manual_path}' (malformed PROPFIND)")
 
     file_id = file_info["id"]
     logger.info(f"Found manual PDF: {manual_path} (file_id={file_id})")
