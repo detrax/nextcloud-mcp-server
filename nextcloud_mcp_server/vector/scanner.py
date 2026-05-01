@@ -29,6 +29,16 @@ from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 logger = logging.getLogger(__name__)
 
 
+# Single source of truth for which doc_types this scanner indexes. The verifier
+# registry in `search/verification.py` must cover every type listed here
+# (enforced by `tests/unit/search/test_verification.py`). Add a verifier in the
+# same PR that adds a new indexed doc_type, or accept ghost-record exposure for
+# that type (see ADR-019).
+INDEXED_DOC_TYPES: frozenset[str] = frozenset(
+    {"note", "file", "deck_card", "news_item"}
+)
+
+
 @dataclass
 class DocumentTask:
     """Document task for processing queue."""

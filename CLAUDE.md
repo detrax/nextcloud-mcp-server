@@ -23,11 +23,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   ```
 
 ### Code Quality
-- **Run ruff and ty before committing**:
+- **Before committing or pushing, invoke the `pre-push-review` skill**:
+  - Runs `ruff check`, `ruff format --check`, `ty check`, and unit tests, then audits the
+    branch diff against this repo's recurring PR-review patterns (mined from PRs #733–#750).
+  - Output is a labelled punch list (🔴 blocking / 🟡 important / 🟢 nit). The main loop
+    fixes; the skill reports.
+  - Skill location: `.claude/skills/pre-push-review/SKILL.md`. Invoke via the `Skill` tool
+    with `skill="pre-push-review"`, or when the user types `/pre-push-review`.
+  - Skip only for tiny diffs (typo, README tweak, single-line dependency bump) or when the
+    user explicitly says "just push it".
+- **Manual fallback** (if the skill is unavailable):
   ```bash
   uv run ruff check
   uv run ruff format
   uv run ty check -- nextcloud_mcp_server
+  uv run pytest tests/unit/ -x -q
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 

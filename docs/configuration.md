@@ -474,6 +474,51 @@ DOCUMENT_CHUNK_OVERLAP=100
 
 **Important**: Changing chunk size requires re-embedding all documents. The collection naming strategy (see "Qdrant Collection Naming" above) helps manage this by creating separate collections for different configurations.
 
+### Verify-on-Read Latency Budget
+
+Every semantic search request runs an access-control verification pass over its
+results before returning them, to filter out documents the user can no longer
+access (deleted, unshared, permissions changed). See
+[ADR-019](ADR-019-verify-on-read-for-semantic-search.md) for the full design.
+
+This adds Nextcloud round-trips to the search path that operators should be
+aware of:
+
+- **Per-search cost**: one Nextcloud round-trip per *unique* `(doc_id, doc_type)`
+  in the result set. Chunking means a 10-result page typically references 3-5
+  unique documents, so verification adds 3-5 round-trips. With the default
+  20-way concurrency this is one parallel batch — usually under 100 ms on a
+  healthy connection.
+- **Concurrency**: all verifications fan out under a shared semaphore.
+  Tunable via the `VERIFICATION_CONCURRENCY` env var (settings field
+  `verification_concurrency`, default 20) — lower it if your Nextcloud
+  backend struggles with the parallel fan-out, or raise it on a healthy
+  connection to speed up large result pages.
+- **News API caveat**: the News app has no per-item endpoint, so the news
+  verifier issues a single `news.get_items(batch_size=-1, get_read=True)` call
+  per search that contains any news result, then intersects locally. The
+  payload is **unbounded** — for users with very large feed backlogs this can
+  dominate verification latency. As a rough guide on a healthy LAN connection:
+  a typical purged backlog (1k–5k items) returns in ~200–500 ms; very large
+  backlogs (>20k items) can exceed 2 s and become the dominant cost of any
+  search that surfaces news results. Disabling News in the indexer or running
+  with a smaller backlog mitigates this; per-item paginated verification is
+  tracked as a future improvement.
+- **Eviction**: when verification finds a definitive miss (404 / 403), the
+  corresponding Qdrant points are deleted in the background on a lifespan-owned
+  task group — fire-and-forget, does **not** block the search response.
+  Eviction failures are logged but never propagated; the next query will
+  re-verify and re-attempt (self-healing).
+- **Failure modes**: transient errors (5xx, network) keep results visible
+  (fail open) so a flaky link does not silently shrink result pages; only
+  *definitive* 404 / 403 drops them.
+
+If eviction ever needs to be disabled (debugging, benchmarking), the
+`evict_on_missing=False` keyword argument on `verify_search_results()` skips
+the Qdrant deletes without changing what is returned to the caller. **This
+is a developer/test flag, not an operator knob — it has no env-var
+equivalent.** Operators who need a runtime toggle should open an issue.
+
 ### Environment Variables Reference
 
 | Variable | Required | Default | Description |

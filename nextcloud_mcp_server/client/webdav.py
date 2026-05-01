@@ -483,13 +483,6 @@ class WebDAVClient(BaseNextcloudClient):
                     "status_code": 409,
                     "message": "Parent directory of destination doesn't exist",
                 }
-                logger.debug(
-                    f"Parent directory of destination '{destination_path}' doesn't exist"
-                )
-                return {
-                    "status_code": 409,
-                    "message": "Parent directory of destination doesn't exist",
-                }
             else:
                 logger.error(
                     f"HTTP error moving resource from '{source_path}' to '{destination_path}': {e}"
@@ -1301,12 +1294,33 @@ class WebDAVClient(BaseNextcloudClient):
     async def get_file_info(self, path: str) -> dict[str, Any] | None:
         """Get file info including file ID via WebDAV PROPFIND.
 
+        .. note::
+            **Behavior change (ADR-019):** previously this method returned
+            ``None`` for HTTP 404. It now raises ``HTTPStatusError`` for any
+            non-2xx status, including 404. ``None`` is reserved for the
+            ambiguous *malformed PROPFIND* case (server returned 2xx with a
+            response body missing required XML elements). External callers
+            updating from the old contract must catch ``HTTPStatusError``
+            and inspect ``e.response.status_code`` to handle 404 explicitly.
+
         Args:
             path: Path to the file (relative to user's files directory)
 
         Returns:
             File info dictionary with id, name, size, content_type, etc.
-            Returns None if file not found.
+            Returns ``None`` ONLY when the server returned a malformed
+            PROPFIND response (missing ``<d:response>`` /
+            ``<d:propstat>`` / ``<d:prop>`` elements) — an ambiguous
+            state where we cannot tell whether the file exists.
+
+        Raises:
+            HTTPStatusError: For any non-2xx HTTP status, including 404
+                ("not found"). Callers that want to treat 404 as
+                "absent" should catch ``HTTPStatusError`` and check
+                ``e.response.status_code``. This matches the convention
+                of the rest of this client and lets verify-on-read
+                distinguish a definitive absence (HTTP 404) from a
+                brittle response (None).
         """
         webdav_path = f"{self._get_webdav_base_path()}/{path.lstrip('/')}"
 
@@ -1323,19 +1337,13 @@ class WebDAVClient(BaseNextcloudClient):
   </d:prop>
 </d:propfind>"""
 
-        try:
-            response = await self._client.request(
-                "PROPFIND",
-                webdav_path,
-                headers={"Depth": "0"},
-                content=propfind_body,
-            )
-            response.raise_for_status()
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.debug(f"File not found: {path}")
-                return None
-            raise
+        response = await self._client.request(
+            "PROPFIND",
+            webdav_path,
+            headers={"Depth": "0"},
+            content=propfind_body,
+        )
+        response.raise_for_status()
 
         # Parse XML response
         root = ET.fromstring(response.content)

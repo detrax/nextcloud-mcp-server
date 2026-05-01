@@ -164,8 +164,14 @@ async def test_get_file_info_returns_file_details(mocker):
 
 
 @pytest.mark.unit
-async def test_get_file_info_returns_none_for_missing_file(mocker):
-    """Test that get_file_info returns None for missing files."""
+async def test_get_file_info_raises_on_404(mocker):
+    """get_file_info now raises HTTPStatusError on 404 (was: returned None).
+
+    The contract was widened so verify-on-read can distinguish a definitive
+    404 from an ambiguous malformed-PROPFIND response. Callers that want
+    "absent → None" semantics should catch HTTPStatusError and check the
+    status code themselves.
+    """
     from httpx import HTTPStatusError, Response
 
     mock_http_client = AsyncMock()
@@ -180,11 +186,10 @@ async def test_get_file_info_returns_none_for_missing_file(mocker):
         )
     )
 
-    # Call get_file_info
-    result = await client.get_file_info("nonexistent.pdf")
+    with pytest.raises(HTTPStatusError) as exc_info:
+        await client.get_file_info("nonexistent.pdf")
 
-    # Verify result is None
-    assert result is None
+    assert exc_info.value.response.status_code == 404
 
 
 @pytest.mark.unit

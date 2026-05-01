@@ -658,6 +658,23 @@ async def _index_document(
     indexed_at = int(time.time())
     points = []
 
+    # Surface deck card data quality issues at indexing time rather than
+    # only at verification time (where _verify_deck_cards falls through to
+    # legacy-data pass-through when board_id/stack_id are missing). This is
+    # logged once per document — not per chunk — to avoid log spam.
+    if doc_task.doc_type == "deck_card":
+        missing_deck_fields = [
+            field for field in ("board_id", "stack_id") if not file_metadata.get(field)
+        ]
+        if missing_deck_fields:
+            logger.warning(
+                "Indexing deck_card %s for user %s with missing metadata: %s; "
+                "verification will fall back to legacy-data pass-through",
+                doc_task.doc_id,
+                doc_task.user_id,
+                missing_deck_fields,
+            )
+
     for i, (chunk, dense_emb, sparse_emb) in enumerate(
         zip(chunks, dense_embeddings, sparse_embeddings)
     ):

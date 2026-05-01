@@ -32,6 +32,7 @@ from nextcloud_mcp_server.observability.metrics import (
 )
 from nextcloud_mcp_server.search.bm25_hybrid import BM25HybridSearchAlgorithm
 from nextcloud_mcp_server.search.context import get_chunk_with_context
+from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -86,15 +87,29 @@ def configure_semantic_tools(mcp: FastMCP):
             context_chars: Number of characters to include before/after matched chunk (default: 300)
 
         Returns:
-            SemanticSearchResponse with matching documents ranked by fusion scores
+            SemanticSearchResponse with matching documents ranked by fusion scores.
+
+            Verification fields (ADR-019 verify-on-read):
+            - verified_chunk_count: chunk rows that passed access checks
+              (sized in chunks; counted before trimming to ``limit``, so it
+              can exceed ``len(results)`` when a doc has multiple matching
+              chunks).
+            - dropped_document_count: unique ``(doc_id, doc_type)`` pairs
+              evicted as ghost records during this search (sized in
+              documents, not chunks).
         """
         settings = get_settings()
         client = await get_client(ctx)
         username = client.username
 
         logger.info(
-            f"BM25 hybrid search: query='{query}', user={username}, "
-            f"limit={limit}, score_threshold={score_threshold}, fusion={fusion}"
+            "BM25 hybrid search: query=%r, user=%s, "
+            "limit=%d, score_threshold=%s, fusion=%s",
+            query,
+            username,
+            limit,
+            score_threshold,
+            fusion,
         )
 
         # Check that vector sync is enabled
@@ -119,48 +134,122 @@ def configure_semantic_tools(mcp: FastMCP):
 
             if doc_types is None:
                 # Cross-app search: search all indexed types
-                # Get unverified results from Qdrant
+                # Get unverified results from Qdrant.
+                #
+                # NOTE (ADR-019): Over-fetch by 2× to absorb ghost-record drops
+                # during verify-on-read. When ghost density is high (e.g. a
+                # large board share was just revoked) this budget can still
+                # under-deliver against the requested ``limit``; the index
+                # self-heals via lazy eviction so subsequent searches recover.
+                # The 2× factor is a deliberate v1 trade-off — raising it
+                # costs Nextcloud round-trips on every search. Trim to
+                # ``limit`` happens AFTER verification.
+                # TODO(ADR-019): expose VERIFICATION_OVERFETCH so operators
+                # with persistent high ghost density can tune this without a
+                # code change.
                 unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit * 2,  # Get extra for access filtering
+                    limit=limit * 2,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                 )
                 all_results.extend(unverified_results)
             else:
-                # Search specific document types
-                # For each requested type, execute search and combine results
+                # Search specific document types.
+                #
+                # Per-Qdrant-query cost: this branch issues ONE query per
+                # requested doc_type, each capped at `limit * 2`. With N
+                # types in `doc_types`, the pre-merge result pool is
+                # therefore N × `limit * 2`, NOT `limit * 2`. That is more
+                # Qdrant work than the cross-app branch above (which makes a
+                # single multi-type query returning `limit * 2` total).
+                #
+                # The post-merge trim below clamps the pool back down to
+                # `limit * 2` so verification (and the Nextcloud round-trips
+                # it triggers) sees the same budget as the cross-app branch.
+                # The per-type Qdrant cost remains higher; pre-trim cost
+                # scales linearly with len(doc_types).
                 for dtype in doc_types:
                     unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,  # Get extra for combining and filtering
+                        limit=limit * 2,
                         doc_type=dtype,
                         score_threshold=score_threshold,
                     )
                     all_results.extend(unverified_results)
 
-                # Sort combined results by score
+                # Sort combined results by score, then cap to `limit * 2` to
+                # match the cross-app branch's over-fetch budget. Without this
+                # cap, N requested doc_types × `limit * 2` results would all
+                # flow into verification, multiplying the Nextcloud round-trip
+                # cost by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[: limit * 2]
 
-            # Note: BM25HybridSearchAlgorithm already deduplicates at chunk level
-            # (doc_id, doc_type, chunk_start, chunk_end), which allows multiple
-            # chunks from the same document while preventing duplicate chunks.
-            # No additional deduplication needed here - multiple chunks per document
-            # are valuable for RAG contexts.
-            # Qdrant already filters by user_id for multi-tenant isolation.
-            # Sampling tool will verify access when fetching full content.
-            search_results = all_results[
-                :limit
-            ]  # Final limit after chunk-level dedup in algorithm
+            # ADR-019: Verify-on-read. The vector index is a recall layer;
+            # Nextcloud is the source of truth for access. Filter out ghost
+            # records (deleted/unshared docs not yet reconciled by webhooks)
+            # BEFORE trimming to `limit`, so we don't lose accessible results
+            # to the limit slot that ghosts would otherwise occupy. We also
+            # run this BEFORE context expansion to avoid re-fetching docs that
+            # are about to be dropped. Pass the lifespan-owned task group so
+            # eviction of dropped points is fire-and-forget (does not block
+            # the response).
+            # Direct attribute access — both AppContext and OAuthAppContext
+            # expose ``eviction_task_group`` as a @property (see app.py),
+            # reading dynamically from the module-level VectorSyncState
+            # singleton. A defensive ``getattr(..., None)`` here would mask
+            # typos; if a future lifespan-context type forgets the property,
+            # AttributeError surfaces during the first search rather than
+            # silently degrading to inline eviction for the life of the
+            # process.
+            eviction_task_group = (
+                ctx.request_context.lifespan_context.eviction_task_group
+            )
+            verification_start = anyio.current_time()
+            verified_results, dropped_count = await verify_search_results(
+                client,
+                all_results,
+                eviction_task_group=eviction_task_group,
+            )
+            verified_chunk_count = len(verified_results)
+            logger.debug(
+                "Verification completed in %.2fs: kept %d chunk(s), dropped %d doc(s)",
+                anyio.current_time() - verification_start,
+                verified_chunk_count,
+                dropped_count,
+            )
+            search_results = verified_results[:limit]
 
-            # Convert SearchResult objects to SemanticSearchResult for response
+            # Convert SearchResult objects to SemanticSearchResult for response.
+            # SearchResult.id is typed `int | str` for forward-compat with future
+            # doc_types, but every currently indexed type uses numeric ids and
+            # the MCP response model narrows to `int`. Casting here makes the
+            # narrowing explicit and surfaces any future string-id type as a
+            # loud failure at the boundary instead of silently widening the
+            # public API.
             results = []
             for r in search_results:
+                try:
+                    narrowed_id = int(r.id)
+                except (TypeError, ValueError) as e:
+                    # Re-raise with explicit context so the outer handler logs
+                    # something operators can act on (the generic "Search
+                    # failed: invalid literal for int()" is opaque).
+                    raise TypeError(
+                        f"SemanticSearchResult.id must be int-convertible, "
+                        f"got {r.id!r} (type={type(r.id).__name__}) for "
+                        f"doc_type={r.doc_type!r}. This indicates a doc_type "
+                        f"with non-numeric ids has been indexed but the "
+                        f"public response model has not been widened. Add "
+                        f"the doc_type to the SemanticSearchResult.id type "
+                        f"or convert at the verifier layer."
+                    ) from e
                 results.append(
                     SemanticSearchResult(
-                        id=r.id,
+                        id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
                         category=r.metadata.get("category", "") if r.metadata else "",
@@ -181,12 +270,20 @@ def configure_semantic_tools(mcp: FastMCP):
             # Expand results with surrounding context if requested
             if include_context and results:
                 logger.info(
-                    f"Expanding {len(results)} results with context "
-                    f"(context_chars={context_chars})"
+                    "Expanding %d results with context (context_chars=%d)",
+                    len(results),
+                    context_chars,
                 )
 
-                # Fetch context for all results in parallel
-                # Limit concurrent requests to prevent connection pool exhaustion
+                # Fetch context for all results in parallel.
+                # Limit concurrent requests to prevent connection pool exhaustion.
+                #
+                # Intentionally distinct from settings.verification_concurrency:
+                # that knob bounds Nextcloud round-trips during access
+                # verification (ADR-019); this one bounds context-expansion
+                # fetches that run only when ``include_context=True``. Operators
+                # tuning one rarely want the other in lockstep, so they share
+                # the default value (20) but not the env var.
                 max_concurrent = 20
                 semaphore = anyio.Semaphore(max_concurrent)
                 expanded_results = [None] * len(results)
@@ -240,20 +337,27 @@ def configure_semantic_tools(mcp: FastMCP):
                                     has_after_truncation=chunk_context.has_after_truncation,
                                 )
                                 logger.debug(
-                                    f"Expanded context for {result.doc_type} {result.id}"
+                                    "Expanded context for %s %s",
+                                    result.doc_type,
+                                    result.id,
                                 )
                             else:
                                 # Context expansion failed, keep original result
                                 expanded_results[index] = result
                                 logger.debug(
-                                    f"Failed to expand context for {result.doc_type} {result.id}, "
-                                    "keeping original result"
+                                    "Failed to expand context for %s %s, "
+                                    "keeping original result",
+                                    result.doc_type,
+                                    result.id,
                                 )
                         except Exception as e:
                             # Context expansion failed, keep original result
                             expanded_results[index] = result
                             logger.warning(
-                                f"Error expanding context for {result.doc_type} {result.id}: {e}"
+                                "Error expanding context for %s %s: %s",
+                                result.doc_type,
+                                result.id,
+                                e,
                             )
 
                 # Run all context fetches in parallel using anyio task group
@@ -264,16 +368,19 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Replace results with expanded versions
                 results = [r for r in expanded_results if r is not None]
                 logger.info(
-                    f"Context expansion completed: {len(results)} results with context"
+                    "Context expansion completed: %d results with context",
+                    len(results),
                 )
 
-            logger.info(f"Returning {len(results)} results from BM25 hybrid search")
+            logger.info("Returning %d results from BM25 hybrid search", len(results))
 
             return SemanticSearchResponse(
                 results=results,
                 query=query,
                 total_found=len(results),
                 search_method=f"bm25_hybrid_{fusion}",
+                verified_chunk_count=verified_chunk_count,
+                dropped_document_count=dropped_count,
             )
 
         except ValueError as e:
@@ -293,14 +400,14 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error(f"Search error: {e}", exc_info=True)
+            logger.error("Search error: %s", e, exc_info=True)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool(
         title="Search with AI-Generated Answer",
         annotations=ToolAnnotations(
             readOnlyHint=True,  # Search doesn't modify data
-            openWorldHint=False,  # Searches only indexed Nextcloud data
+            openWorldHint=True,  # Calls into Nextcloud via nc_semantic_search
         ),
     )
     @require_scopes("semantic.read")
@@ -352,6 +459,14 @@ def configure_semantic_tools(mcp: FastMCP):
         Note: Requires MCP client to support sampling. If sampling is unavailable,
         the tool gracefully degrades to returning documents with an explanation.
         The client may prompt the user to approve the sampling request.
+
+        Latency profile: For each note in the result page, this tool fetches
+        the full note body via ``client.notes.get_note`` after upstream
+        verify-on-read has already round-tripped to the same endpoint as a
+        race guard (ADR-019). Expect one additional Nextcloud round-trip per
+        note result; raising ``limit`` above the default of 5 amplifies this
+        cost roughly linearly. File / news / deck results do not pay this
+        cost — they reuse the verified excerpt.
         """
         # 1. Retrieve relevant documents via existing semantic search
         search_response = await nc_semantic_search(
@@ -366,7 +481,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # 2. Handle no results case - don't waste a sampling call
         if not search_response.results:
-            logger.debug(f"No documents found for query: {query}")
+            logger.debug("No documents found for query: %r", query)
             return SamplingSearchResponse(
                 query=query,
                 generated_answer="No relevant documents found in your Nextcloud content for this query.",
@@ -383,22 +498,25 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # Log capability check result for debugging
         logger.info(
-            f"Sampling capability check: client_has_sampling={client_has_sampling}, "
-            f"query='{query}'"
+            "Sampling capability check: client_has_sampling=%s, query=%r",
+            client_has_sampling,
+            query,
         )
         if hasattr(ctx.session, "_client_params") and ctx.session._client_params:
             client_caps = ctx.session._client_params.capabilities
             logger.debug(
-                f"Client advertised capabilities: "
-                f"roots={client_caps.roots is not None}, "
-                f"sampling={client_caps.sampling is not None}, "
-                f"experimental={client_caps.experimental is not None}"
+                "Client advertised capabilities: "
+                "roots=%s, sampling=%s, experimental=%s",
+                client_caps.roots is not None,
+                client_caps.sampling is not None,
+                client_caps.experimental is not None,
             )
 
         if not client_has_sampling:
             logger.info(
-                f"Client does not support sampling (query: '{query}'), "
-                f"returning {len(search_response.results)} documents"
+                "Client does not support sampling (query: %r), returning %d documents",
+                query,
+                len(search_response.results),
             )
             return SamplingSearchResponse(
                 query=query,
@@ -414,14 +532,24 @@ def configure_semantic_tools(mcp: FastMCP):
                 success=True,
             )
 
-        # 4. Fetch full content for notes in parallel (also verifies access)
-        # Use anyio task group for concurrent fetching with semaphore to prevent
-        # connection pool exhaustion
+        # 4. Fetch full content for notes in parallel.
+        # Access verification has already happened upstream in
+        # nc_semantic_search via verify_search_results (ADR-019), so any
+        # exception here is a sub-second race (doc deleted between
+        # verification and this fetch) — drop the result in that case.
         client = await get_client(ctx)
         accessible_results = [None] * len(search_response.results)
         full_contents = [None] * len(search_response.results)
 
-        # Limit concurrent requests to prevent connection pool exhaustion
+        # Limit concurrent requests to prevent connection pool exhaustion.
+        #
+        # Intentionally distinct from settings.verification_concurrency:
+        # that knob bounds Nextcloud round-trips during access
+        # verification (ADR-019). This one bounds the answer tool's
+        # full-content fetch — a separate request phase tied to RAG
+        # answer generation. Operators tuning one rarely want the other
+        # in lockstep, so they share the default value (20) but not the
+        # env var.
         max_concurrent = 20
         semaphore = anyio.Semaphore(max_concurrent)
 
@@ -429,26 +557,30 @@ def configure_semantic_tools(mcp: FastMCP):
             """Fetch full content for a single document (parallel with semaphore)."""
             async with semaphore:
                 if result.doc_type == "note":
+                    # SemanticSearchResult.id is typed `int` (Pydantic enforces
+                    # at construction); no defensive cast is needed here. The
+                    # catch-all below covers only the verify-then-delete race.
                     try:
                         note = await client.notes.get_note(result.id)
-                        # Note is accessible, store result and full content
                         content = note.get("content", "")
                         accessible_results[index] = result
                         full_contents[index] = content
                         logger.debug(
-                            f"Fetched full content for note {result.id} "
-                            f"(length: {len(content)} chars)"
+                            "Fetched full content for note %s (length: %d chars)",
+                            result.id,
+                            len(content),
                         )
                     except Exception as e:
-                        # Note might have been deleted or permissions changed
-                        # Leave as None to filter out later
+                        # Race window after verify_search_results — drop result.
                         logger.debug(
-                            f"Note {result.id} not accessible: {e}. "
-                            f"Excluding from results."
+                            "Note %s disappeared between verification and "
+                            "content fetch: %s. Excluding from results.",
+                            result.id,
+                            e,
                         )
                 else:
-                    # Non-note document types (future: calendar, deck, files)
-                    # For now, keep them with excerpts
+                    # Non-note types (file, news_item, deck_card) keep the
+                    # excerpt — already access-verified upstream.
                     accessible_results[index] = result
                     # full_contents[index] remains None (will use excerpt)
 
@@ -466,7 +598,9 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # Check if we filtered out all results
         if not accessible_results:
-            logger.warning(f"All search results became inaccessible for query: {query}")
+            logger.warning(
+                "All search results became inaccessible for query: %r", query
+            )
             return SamplingSearchResponse(
                 query=query,
                 generated_answer="All matching documents are no longer accessible.",
@@ -508,9 +642,12 @@ def configure_semantic_tools(mcp: FastMCP):
         )
 
         logger.info(
-            f"Initiating sampling request: query_length={len(query)}, "
-            f"documents={len(search_response.results)}, "
-            f"prompt_length={len(prompt)}, max_tokens={max_answer_tokens}"
+            "Initiating sampling request: query_length=%d, documents=%d, "
+            "prompt_length=%d, max_tokens=%d",
+            len(query),
+            len(search_response.results),
+            len(prompt),
+            max_answer_tokens,
         )
 
         # 6. Request LLM completion via MCP sampling with timeout
@@ -543,13 +680,15 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Handle non-text responses (shouldn't happen for text prompts)
                 generated_answer = f"Received non-text response of type: {sampling_result.content.type}"
                 logger.warning(
-                    f"Unexpected content type from sampling: {sampling_result.content.type}"
+                    "Unexpected content type from sampling: %s",
+                    sampling_result.content.type,
                 )
 
             logger.info(
-                f"Sampling successful: model={sampling_result.model}, "
-                f"stop_reason={sampling_result.stopReason}, "
-                f"answer_length={len(generated_answer)}"
+                "Sampling successful: model=%s, stop_reason=%s, answer_length=%d",
+                sampling_result.model,
+                sampling_result.stopReason,
+                len(generated_answer),
             )
 
             return SamplingSearchResponse(
@@ -565,8 +704,10 @@ def configure_semantic_tools(mcp: FastMCP):
 
         except TimeoutError:
             logger.warning(
-                f"Sampling request timed out after {sampling_timeout_seconds} seconds for query: '{query}', "
-                f"returning search results only"
+                "Sampling request timed out after %d seconds for query: %r, "
+                "returning search results only",
+                sampling_timeout_seconds,
+                query,
             )
             return SamplingSearchResponse(
                 query=query,
@@ -588,18 +729,20 @@ def configure_semantic_tools(mcp: FastMCP):
 
             if "rejected" in error_msg.lower() or "denied" in error_msg.lower():
                 # User explicitly declined - this is normal, not an error
-                logger.info(f"User declined sampling request for query: '{query}'")
+                logger.info("User declined sampling request for query: %r", query)
                 search_method = "semantic_sampling_user_declined"
                 user_message = "User declined to generate an answer"
             elif "not supported" in error_msg.lower():
                 # Client doesn't support sampling - also normal
-                logger.info(f"Sampling not supported by client for query: '{query}'")
+                logger.info("Sampling not supported by client for query: %r", query)
                 search_method = "semantic_sampling_unsupported"
                 user_message = "Sampling not supported by this client"
             else:
                 # Other MCP protocol errors
                 logger.warning(
-                    f"MCP error during sampling for query '{query}': {error_msg}"
+                    "MCP error during sampling for query %r: %s",
+                    query,
+                    error_msg,
                 )
                 search_method = "semantic_sampling_mcp_error"
                 user_message = f"Sampling unavailable: {error_msg}"
@@ -620,8 +763,10 @@ def configure_semantic_tools(mcp: FastMCP):
         except Exception as e:
             # Truly unexpected errors - these SHOULD have tracebacks
             logger.error(
-                f"Unexpected error during sampling for query '{query}': "
-                f"{type(e).__name__}: {e}",
+                "Unexpected error during sampling for query %r: %s: %s",
+                query,
+                type(e).__name__,
+                e,
                 exc_info=True,
             )
 
@@ -670,11 +815,15 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         try:
-            # Get document receive stream from lifespan context
+            # Get document receive stream from lifespan context. Direct
+            # attribute access matches the eviction_task_group pattern at
+            # ``nc_semantic_search`` (see comment there): both AppContext
+            # and OAuthAppContext define ``document_receive_stream``, so a
+            # missing attribute is a typo that should fail loudly. The
+            # value itself can legitimately be ``None`` before sync starts,
+            # which the check below handles.
             lifespan_ctx = ctx.request_context.lifespan_context
-            document_receive_stream = getattr(
-                lifespan_ctx, "document_receive_stream", None
-            )
+            document_receive_stream = lifespan_ctx.document_receive_stream
 
             if document_receive_stream is None:
                 logger.debug(
@@ -705,7 +854,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 indexed_count = count_result.count
 
             except Exception as e:
-                logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+                logger.warning("Failed to query Qdrant for indexed count: %s", e)
                 # Continue with indexed_count = 0
 
             # Determine status
@@ -719,7 +868,7 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         except Exception as e:
-            logger.error(f"Error getting vector sync status: {e}")
+            logger.error("Error getting vector sync status: %s", e)
             raise McpError(
                 ErrorData(
                     code=-1,

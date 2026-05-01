@@ -48,8 +48,10 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
     ) -> list[SearchResult]:
         """Execute semantic search using vector similarity.
 
-        Returns unverified results from Qdrant. Access verification should be
-        performed separately at the final output stage using verify_search_results().
+        Returns unverified results from Qdrant. Access verification is
+        performed separately at the server tool layer via
+        ``nextcloud_mcp_server.search.verification.verify_search_results``
+        (see ADR-019).
 
         Deduplicates by (doc_id, doc_type, chunk_start_offset, chunk_end_offset)
         to show multiple chunks from the same document while avoiding duplicate chunks.
@@ -162,9 +164,14 @@ class SemanticSearchAlgorithm(SearchAlgorithm):
                 metadata["path"] = path
 
             # Add deck_card-specific metadata for frontend URL construction
+            # and verify-on-read (ADR-019) — both board_id and stack_id are
+            # required to call deck.get_card without an O(boards × stacks)
+            # iteration fallback.
             if doc_type == "deck_card":
                 if board_id := result.payload.get("board_id"):
                     metadata["board_id"] = board_id
+                if stack_id := result.payload.get("stack_id"):
+                    metadata["stack_id"] = stack_id
 
             # Return unverified results (verification happens at output stage)
             results.append(
