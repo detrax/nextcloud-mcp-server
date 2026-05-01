@@ -39,14 +39,18 @@ from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.search.algorithms import SearchResult
+from nextcloud_mcp_server.search.algorithms import (
+    NextcloudClientProtocol,
+    SearchResult,
+)
 from nextcloud_mcp_server.vector.eviction import delete_document_points
 
 logger = logging.getLogger(__name__)
 
 
 BatchVerifier = Callable[
-    [Any, list[SearchResult], anyio.Semaphore], Awaitable[set[int | str]]
+    [NextcloudClientProtocol, list[SearchResult], anyio.Semaphore],
+    Awaitable[set[int | str]],
 ]
 """(client, results, semaphore) -> set of doc_ids accessible to the user."""
 
@@ -57,15 +61,26 @@ BatchVerifier = Callable[
 
 
 def _is_definitive_404_or_403(exc: BaseException) -> bool:
-    """Return True if exc indicates the document is definitively inaccessible."""
+    """Return True if exc indicates the document is definitively inaccessible.
+
+    401 is intentionally excluded — it usually signals expired credentials
+    rather than permanent denial, so it is treated as transient (keep the
+    result; the next query will re-verify after the client refreshes).
+    """
     if isinstance(exc, HTTPStatusError):
         return exc.response.status_code in (403, 404)
     return False
 
 
 async def _verify_notes(
-    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
 ) -> set[int | str]:
+    # Mutated by inner check() tasks under the task group below. Safe
+    # without a lock: anyio is cooperative, .add() is not an await
+    # point, so two tasks cannot race on the same write. Same rationale
+    # as accessible_by_type in verify_search_results.
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -116,8 +131,14 @@ async def _verify_notes(
 
 
 async def _verify_files(
-    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
 ) -> set[int | str]:
+    # Mutated by inner check() tasks under the task group below. Safe
+    # without a lock: anyio is cooperative, .add() is not an await
+    # point, so two tasks cannot race on the same write. Same rationale
+    # as accessible_by_type in verify_search_results.
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -184,8 +205,14 @@ async def _verify_files(
 
 
 async def _verify_deck_cards(
-    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
 ) -> set[int | str]:
+    # Mutated by inner check() tasks under the task group below. Safe
+    # without a lock: anyio is cooperative, .add() is not an await
+    # point, so two tasks cannot race on the same write. Same rationale
+    # as accessible_by_type in verify_search_results.
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -263,7 +290,9 @@ async def _verify_deck_cards(
 
 
 async def _verify_news_items(
-    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
+    client: NextcloudClientProtocol,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
 ) -> set[int | str]:
     """Batch-verify news items with a single fetch.
 
@@ -284,6 +313,12 @@ async def _verify_news_items(
     # the same semaphore. Latency of this fetch is proportional to the
     # user's full news corpus; see the News caveat in
     # docs/configuration.md for production guidance.
+    #
+    # Multi-user note: the "≤1 per search" bound is per-search, not
+    # per-process. If N users simultaneously search news content, all N
+    # hold a slot for the duration of their respective fetches, each
+    # consuming 1/max_concurrent of the shared verification budget. A
+    # single news-heavy user can therefore hold their slot for seconds.
     async with semaphore:
         try:
             # TODO(perf): if profiling shows this fetch dominates query latency
@@ -493,10 +528,12 @@ async def verify_search_results(
                 inaccessible.add((doc_id, doc_type))
 
     if inaccessible:
+        # Tag ids with their type (int vs str) so ghost-record logs are
+        # unambiguous: int 42 and str "42" both render as "42" otherwise.
         logger.info(
             "Verification dropped %d inaccessible document(s): %s",
             len(inaccessible),
-            sorted((str(d), t) for d, t in inaccessible),
+            sorted((f"{type(d).__name__}:{d}", t) for d, t in inaccessible),
         )
 
     # Filter results, preserving order. All chunks of an inaccessible document

@@ -87,7 +87,16 @@ def configure_semantic_tools(mcp: FastMCP):
             context_chars: Number of characters to include before/after matched chunk (default: 300)
 
         Returns:
-            SemanticSearchResponse with matching documents ranked by fusion scores
+            SemanticSearchResponse with matching documents ranked by fusion scores.
+
+            Verification fields (ADR-019 verify-on-read):
+            - verified_chunk_count: chunk rows that passed access checks
+              (sized in chunks; counted before trimming to ``limit``, so it
+              can exceed ``len(results)`` when a doc has multiple matching
+              chunks).
+            - dropped_count: unique ``(doc_id, doc_type)`` pairs evicted as
+              ghost records during this search (sized in documents, not
+              chunks).
         """
         settings = get_settings()
         client = await get_client(ctx)
@@ -248,8 +257,15 @@ def configure_semantic_tools(mcp: FastMCP):
                     context_chars,
                 )
 
-                # Fetch context for all results in parallel
-                # Limit concurrent requests to prevent connection pool exhaustion
+                # Fetch context for all results in parallel.
+                # Limit concurrent requests to prevent connection pool exhaustion.
+                #
+                # Intentionally distinct from settings.verification_concurrency:
+                # that knob bounds Nextcloud round-trips during access
+                # verification (ADR-019); this one bounds context-expansion
+                # fetches that run only when ``include_context=True``. Operators
+                # tuning one rarely want the other in lockstep, so they share
+                # the default value (20) but not the env var.
                 max_concurrent = 20
                 semaphore = anyio.Semaphore(max_concurrent)
                 expanded_results = [None] * len(results)
@@ -507,7 +523,15 @@ def configure_semantic_tools(mcp: FastMCP):
         accessible_results = [None] * len(search_response.results)
         full_contents = [None] * len(search_response.results)
 
-        # Limit concurrent requests to prevent connection pool exhaustion
+        # Limit concurrent requests to prevent connection pool exhaustion.
+        #
+        # Intentionally distinct from settings.verification_concurrency:
+        # that knob bounds Nextcloud round-trips during access
+        # verification (ADR-019). This one bounds the answer tool's
+        # full-content fetch — a separate request phase tied to RAG
+        # answer generation. Operators tuning one rarely want the other
+        # in lockstep, so they share the default value (20) but not the
+        # env var.
         max_concurrent = 20
         semaphore = anyio.Semaphore(max_concurrent)
 
