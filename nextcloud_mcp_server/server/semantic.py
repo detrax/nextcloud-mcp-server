@@ -156,9 +156,20 @@ def configure_semantic_tools(mcp: FastMCP):
                 )
                 all_results.extend(unverified_results)
             else:
-                # Search specific document types
-                # For each requested type, execute search and combine results
-                # under the same 2× over-fetch budget (see NOTE above).
+                # Search specific document types.
+                #
+                # Per-Qdrant-query cost: this branch issues ONE query per
+                # requested doc_type, each capped at `limit * 2`. With N
+                # types in `doc_types`, the pre-merge result pool is
+                # therefore N × `limit * 2`, NOT `limit * 2`. That is more
+                # Qdrant work than the cross-app branch above (which makes a
+                # single multi-type query returning `limit * 2` total).
+                #
+                # The post-merge trim below clamps the pool back down to
+                # `limit * 2` so verification (and the Nextcloud round-trips
+                # it triggers) sees the same budget as the cross-app branch.
+                # The per-type Qdrant cost remains higher; pre-trim cost
+                # scales linearly with len(doc_types).
                 for dtype in doc_types:
                     unverified_results = await search_algo.search(
                         query=query,

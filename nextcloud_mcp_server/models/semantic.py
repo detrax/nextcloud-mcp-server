@@ -97,7 +97,11 @@ class SemanticSearchResponse(BaseResponse):
             "records during verify-on-read (ADR-019). A short result page "
             "(len(results) < limit) combined with a non-zero "
             "dropped_document_count indicates ghost density rather than "
-            "scarcity of relevant content."
+            "scarcity of relevant content. Note: this counter is sized in "
+            "unique documents while verified_chunk_count is sized in "
+            "chunks — a single document can contribute multiple chunks, "
+            "so subtracting dropped_document_count from "
+            "verified_chunk_count is NOT a meaningful operation."
         ),
     )
 

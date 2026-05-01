@@ -126,6 +126,24 @@ async def test_verify_notes_transient_5xx_keeps(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_notes_429_keeps_as_transient(mocker):
+    """HTTP 429 (rate-limit) is transient, NOT a definitive 403/404 drop.
+
+    Locks in that ``_is_definitive_404_or_403`` returns False for 429 so a
+    future refactor cannot accidentally treat rate-limit responses as
+    permanent revocations and shrink result pages on every Nextcloud hiccup.
+    """
+    notes_client = SimpleNamespace(
+        get_note=mocker.AsyncMock(side_effect=_http_error(429))
+    )
+    client = SimpleNamespace(notes=notes_client, username="alice")
+
+    result = await _verify_notes(client, [_make_result(42)], _sem())
+
+    assert result == {42}
+
+
+@pytest.mark.unit
 async def test_verify_notes_unexpected_exception_keeps(mocker):
     notes_client = SimpleNamespace(
         get_note=mocker.AsyncMock(side_effect=RuntimeError("boom"))
@@ -273,6 +291,27 @@ async def test_verify_news_items_api_403_drops_all(mocker):
 async def test_verify_news_items_transient_keeps_all(mocker):
     news_client = SimpleNamespace(
         get_items=mocker.AsyncMock(side_effect=_http_error(502))
+    )
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(1, doc_type="news_item"),
+            _make_result(2, doc_type="news_item"),
+            _make_result(3, doc_type="news_item"),
+        ],
+        _sem(),
+    )
+
+    assert result == {1, 2, 3}
+
+
+@pytest.mark.unit
+async def test_verify_news_items_429_keeps_as_transient(mocker):
+    """HTTP 429 from get_items must NOT collapse the batch (transient)."""
+    news_client = SimpleNamespace(
+        get_items=mocker.AsyncMock(side_effect=_http_error(429))
     )
     client = SimpleNamespace(news=news_client, username="alice")
 
@@ -506,6 +545,23 @@ async def test_verify_files_transient_5xx_keeps(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_files_429_keeps_as_transient(mocker):
+    """HTTP 429 from get_file_info must NOT silently drop file results."""
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=_http_error(429))
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="alice")
+
+    result = await _verify_files(
+        client,
+        [_make_result(7, doc_type="file", metadata={"path": "x.txt"})],
+        _sem(),
+    )
+
+    assert result == {7}
+
+
+@pytest.mark.unit
 async def test_verify_files_unexpected_exception_keeps(mocker):
     """A non-HTTP exception from get_file_info must not drop the result.
 
@@ -605,6 +661,29 @@ async def test_verify_deck_cards_transient_5xx_keeps(mocker):
     """Transient 5xx from get_card must NOT silently shrink results."""
     deck_client = SimpleNamespace(
         get_card=mocker.AsyncMock(side_effect=_http_error(502))
+    )
+    client = SimpleNamespace(deck=deck_client, username="alice")
+
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+
+    assert result == {42}
+
+
+@pytest.mark.unit
+async def test_verify_deck_cards_429_keeps_as_transient(mocker):
+    """HTTP 429 from get_card must NOT silently shrink result pages."""
+    deck_client = SimpleNamespace(
+        get_card=mocker.AsyncMock(side_effect=_http_error(429))
     )
     client = SimpleNamespace(deck=deck_client, username="alice")
 

@@ -358,9 +358,18 @@ async def _verify_news_items(
             )
             return set(doc_ids)
 
-    # Build present_ids from the API response. If the API itself returns
-    # malformed (non-numeric) ids, the whole batch becomes unverifiable —
-    # fail open for every requested doc_id (transient).
+    # Build present_ids from the API response. Granularity is intentionally
+    # asymmetric with the per-item loop below:
+    #
+    #   * Here (structural failure): if the API response itself is corrupt
+    #     — even one item with a non-numeric id — we cannot reliably build
+    #     `present_ids`, so every requested doc_id fails open. The batch
+    #     is the only safe blast radius when the source-of-truth payload
+    #     can't be trusted.
+    #   * Below (data failure): a single non-numeric *stored* doc_id is a
+    #     local data issue. Failing the whole batch open would let one bad
+    #     row in Qdrant mask real revocations for every other item, so we
+    #     scope the fail-open to that one id.
     try:
         present_ids = {
             int(item.get("id")) for item in items if item.get("id") is not None
@@ -375,7 +384,8 @@ async def _verify_news_items(
 
     # Per-item check: a single non-numeric *stored* doc_id is fail-open
     # for THAT item only — not the whole batch. Mirrors the per-item
-    # shape of the notes/files/deck verifiers.
+    # shape of the notes/files/deck verifiers. See the granularity note
+    # above for why this is narrower than the API-response failure path.
     accessible: set[int | str] = set()
     for d in doc_ids:
         try:
