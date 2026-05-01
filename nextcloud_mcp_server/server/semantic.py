@@ -177,8 +177,16 @@ def configure_semantic_tools(mcp: FastMCP):
             # are about to be dropped. Pass the lifespan-owned task group so
             # eviction of dropped points is fire-and-forget (does not block
             # the response).
-            eviction_task_group = getattr(
-                ctx.request_context.lifespan_context, "eviction_task_group", None
+            # Direct attribute access — both AppContext and OAuthAppContext
+            # expose ``eviction_task_group`` as a @property (see app.py),
+            # reading dynamically from the module-level VectorSyncState
+            # singleton. A defensive ``getattr(..., None)`` here would mask
+            # typos; if a future lifespan-context type forgets the property,
+            # AttributeError surfaces during the first search rather than
+            # silently degrading to inline eviction for the life of the
+            # process.
+            eviction_task_group = (
+                ctx.request_context.lifespan_context.eviction_task_group
             )
             verified_results, dropped_count = await verify_search_results(
                 client,
@@ -507,8 +515,11 @@ def configure_semantic_tools(mcp: FastMCP):
             """Fetch full content for a single document (parallel with semaphore)."""
             async with semaphore:
                 if result.doc_type == "note":
+                    # SemanticSearchResult.id is typed `int` (Pydantic enforces
+                    # at construction); no defensive cast is needed here. The
+                    # catch-all below covers only the verify-then-delete race.
                     try:
-                        note = await client.notes.get_note(int(result.id))
+                        note = await client.notes.get_note(result.id)
                         content = note.get("content", "")
                         accessible_results[index] = result
                         full_contents[index] = content
