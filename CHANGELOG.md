@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.77.0 (2026-05-01)
+
+### Feat
+
+- **search**: verify-on-read for semantic search results (ADR-019)
+
+### Refactor
+
+- **search**: address PR #750 round 12 review feedback
+- **search**: address PR #750 round 11 review feedback
+- **search**: address PR #750 round 10 review feedback
+- **search**: address PR #750 round 9 review feedback
+- **search**: pre-push review fixes for PR #750
+- **search**: address PR #750 round 8 review feedback
+- **search**: address PR #750 round 7 review feedback
+- **search**: address PR #750 round 6 review feedback
+- **search**: address PR #750 round 5 review feedback
+- **search**: address PR #750 round 4 review feedback
+- **search**: address PR #750 round 3 review feedback
+- **search**: address PR #750 round 2 review feedback
+- **search**: address PR #750 review feedback
+
 ## v0.76.0 (2026-05-01)
 
 ### Feat
