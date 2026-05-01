@@ -17,6 +17,7 @@ from nextcloud_mcp_server.search.verification import (
     get_supported_doc_types,
     verify_search_results,
 )
+from nextcloud_mcp_server.vector.scanner import INDEXED_DOC_TYPES
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,13 +59,13 @@ def _http_error(status_code: int) -> HTTPStatusError:
 
 @pytest.mark.unit
 def test_supported_doc_types_covers_indexed_types():
-    """ADR-019 implementation checklist: every indexed doc_type has a verifier.
+    """ADR-019 CI guard: every doc_type indexed by the scanner has a verifier.
 
-    Indexed types are defined in vector/scanner.py and vector/processor.py:
-    note, file, deck_card, news_item.
+    `INDEXED_DOC_TYPES` is the single source of truth in `vector/scanner.py`;
+    this test fails if a new indexed type is added without a registered
+    verifier in `search/verification.py`.
     """
-    expected = {"note", "file", "deck_card", "news_item"}
-    assert get_supported_doc_types() >= expected
+    assert get_supported_doc_types() >= INDEXED_DOC_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +424,7 @@ async def test_verify_search_results_dedupes_chunks_per_document(mocker):
 
 @pytest.mark.unit
 async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
+    """Inline-fallback path (no eviction_task_group): evict completes before return."""
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
 
@@ -440,6 +442,49 @@ async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
 
     assert [r.id for r in kept] == [1]
     spy_evict.assert_awaited_once_with(99, "note", "alice")
+
+
+@pytest.mark.unit
+async def test_verify_search_results_fire_and_forget_eviction(mocker):
+    """When eviction_task_group is provided, eviction does not block the response.
+
+    Validates the ADR-019 design: spawn evict() on the lifespan-owned task
+    group via start_soon so the search response returns immediately. The
+    eviction still runs (verified after the task group exits).
+    """
+    eviction_started = anyio.Event()
+    eviction_may_complete = anyio.Event()
+    eviction_completed = anyio.Event()
+
+    async def slow_delete(doc_id, doc_type, user_id):
+        eviction_started.set()
+        await eviction_may_complete.wait()
+        eviction_completed.set()
+
+    mocker.patch.object(
+        verification,
+        "delete_document_points",
+        mocker.AsyncMock(side_effect=slow_delete),
+    )
+
+    note_verifier = mocker.AsyncMock(return_value=set())  # both inaccessible
+    mocker.patch.dict(verification._VERIFIERS, {"note": note_verifier}, clear=False)
+
+    results = [_make_result(99, doc_type="note")]
+    client = SimpleNamespace(username="alice")
+
+    async with anyio.create_task_group() as tg:
+        kept = await verify_search_results(client, results, eviction_task_group=tg)
+        # 1. Search response was returned …
+        assert kept == []
+        # 2. … even though eviction has started but not finished.
+        await eviction_started.wait()
+        assert not eviction_completed.is_set()
+        # 3. Now allow eviction to complete; the task group exit awaits it.
+        eviction_may_complete.set()
+
+    # After the task group exits, the eviction must have run.
+    assert eviction_completed.is_set()
 
 
 @pytest.mark.unit

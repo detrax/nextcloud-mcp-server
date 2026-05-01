@@ -156,8 +156,17 @@ def configure_semantic_tools(mcp: FastMCP):
             # BEFORE trimming to `limit`, so we don't lose accessible results
             # to the limit slot that ghosts would otherwise occupy. We also
             # run this BEFORE context expansion to avoid re-fetching docs that
-            # are about to be dropped.
-            verified_results = await verify_search_results(client, all_results)
+            # are about to be dropped. Pass the lifespan-owned task group so
+            # eviction of dropped points is fire-and-forget (does not block
+            # the response).
+            eviction_task_group = getattr(
+                ctx.request_context.lifespan_context, "eviction_task_group", None
+            )
+            verified_results = await verify_search_results(
+                client,
+                all_results,
+                eviction_task_group=eviction_task_group,
+            )
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response

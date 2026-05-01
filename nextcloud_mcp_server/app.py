@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import anyio
 import click
 import httpx
+from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
@@ -319,6 +320,10 @@ class VectorSyncState:
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
+    # Long-lived task group used for fire-and-forget background work spawned
+    # from the request path (e.g. ADR-019 verify-on-read eviction). Set by the
+    # starlette lifespan after entering its task group; cleared on shutdown.
+    eviction_task_group: Optional[TaskGroup] = None
 
 
 # Module-level singleton for vector sync state
@@ -335,6 +340,7 @@ class AppContext:
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
+    eviction_task_group: Optional[TaskGroup] = None
 
 
 @dataclass
@@ -353,6 +359,7 @@ class OAuthAppContext:
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
+    eviction_task_group: Optional[TaskGroup] = None
 
 
 class BasicAuthMiddleware:
@@ -569,6 +576,7 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             document_receive_stream=_vector_sync_state.document_receive_stream,
             shutdown_event=_vector_sync_state.shutdown_event,
             scanner_wake_event=_vector_sync_state.scanner_wake_event,
+            eviction_task_group=_vector_sync_state.eviction_task_group,
         )
     finally:
         logger.info("Shutting down BasicAuth session")
@@ -1189,6 +1197,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     document_receive_stream=_vector_sync_state.document_receive_stream,
                     shutdown_event=_vector_sync_state.shutdown_event,
                     scanner_wake_event=_vector_sync_state.scanner_wake_event,
+                    eviction_task_group=_vector_sync_state.eviction_task_group,
                 )
             finally:
                 logger.info("Shutting down MCP server")
@@ -1604,6 +1613,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         username,
                     )
 
+                # Expose this long-lived task group to request-path code that
+                # wants to spawn background work (e.g. ADR-019 verify-on-read
+                # eviction). Eviction coroutines have their own try/except, so
+                # they cannot panic the parent group.
+                _vector_sync_state.eviction_task_group = tg
+
                 logger.info(
                     f"Background sync tasks started: 1 scanner + "
                     f"{settings.vector_sync_processor_workers} processors"
@@ -1617,6 +1632,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         # Shutdown signal
                         logger.info("Shutting down background sync tasks")
                         shutdown_event.set()
+                        # Request path must not spawn into a cancelling group.
+                        _vector_sync_state.eviction_task_group = None
                         await client.close()
                         # TaskGroup automatically cancels all tasks on exit
 
@@ -1786,6 +1803,12 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             use_basic_auth,  # Pass as positional arg (before task_status)
                         )
 
+                    # Expose this long-lived task group to request-path code
+                    # that wants to spawn background work (e.g. ADR-019
+                    # verify-on-read eviction). Eviction coroutines have their
+                    # own try/except, so they cannot panic the parent group.
+                    _vector_sync_state.eviction_task_group = tg
+
                     logger.info(
                         f"Background sync tasks started: 1 user manager + "
                         f"{settings.vector_sync_processor_workers} processors"
@@ -1799,6 +1822,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                             # Shutdown signal
                             logger.info("Shutting down background sync tasks")
                             shutdown_event.set()
+                            # Request path must not spawn into a cancelling group.
+                            _vector_sync_state.eviction_task_group = None
                             # Close token broker HTTP client
                             if token_broker._http_client:
                                 await token_broker._http_client.aclose()

@@ -35,6 +35,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import anyio
+from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 
 from nextcloud_mcp_server.search.algorithms import SearchResult
@@ -128,7 +129,11 @@ async def _verify_files(
             try:
                 info = await client.webdav.get_file_info(file_path)
                 if info is None:
-                    # get_file_info returns None on definitive 404
+                    # Contract: WebDAVClient.get_file_info returns None on 404
+                    # and raises HTTPStatusError on 403/5xx/network. If that
+                    # contract changes (e.g. a future refactor that raises 404
+                    # like other client methods), the `except HTTPStatusError`
+                    # block below already handles it via _is_definitive_404_or_403.
                     return
                 accessible.add(doc_id)
             except HTTPStatusError as e:
@@ -256,13 +261,27 @@ async def _verify_news_items(
             )
             return set(doc_ids)
 
-    present_ids = {int(item.get("id")) for item in items if item.get("id") is not None}
-    # Map back to the original doc_id types (caller may pass ints or strs).
-    accessible: set[int | str] = set()
-    for d in doc_ids:
-        if int(d) in present_ids:
-            accessible.add(d)
-    return accessible
+    # Cast safely: a non-numeric id from the API or in our doc_ids would
+    # otherwise raise ValueError after the semaphore block exits and surface
+    # as a verifier crash. Treat as transient (fail open) instead.
+    try:
+        present_ids = {
+            int(item.get("id")) for item in items if item.get("id") is not None
+        }
+        # Map back to the original doc_id types (caller may pass ints or strs).
+        accessible: set[int | str] = set()
+        for d in doc_ids:
+            if int(d) in present_ids:
+                accessible.add(d)
+        return accessible
+    except (TypeError, ValueError) as e:
+        logger.warning(
+            "Non-numeric id while verifying news items (sample=%r, doc_ids=%r): %s; keeping all results",
+            items[:3] if items else items,
+            doc_ids,
+            e,
+        )
+        return set(doc_ids)
 
 
 _VERIFIERS: dict[str, BatchVerifier] = {
@@ -293,6 +312,7 @@ async def verify_search_results(
     *,
     evict_on_missing: bool = True,
     max_concurrent: int = DEFAULT_VERIFICATION_CONCURRENCY,
+    eviction_task_group: TaskGroup | None = None,
 ) -> list[SearchResult]:
     """Filter search results to those the user can currently access.
 
@@ -301,9 +321,13 @@ async def verify_search_results(
     concurrently per doc_type and concurrently per id within each verifier,
     bounded by a shared semaphore (``max_concurrent``).
 
-    When ``evict_on_missing=True``, points for documents that fail
-    verification are deleted from Qdrant in-line. Eviction failures are
-    logged but never propagated.
+    When ``evict_on_missing=True``, points for documents that fail verification
+    are deleted from Qdrant. If ``eviction_task_group`` is provided (the
+    lifespan-owned task group from ``app.py::VectorSyncState``), eviction is
+    fire-and-forget — the search response returns immediately and Qdrant
+    deletes happen in the background. If no task group is provided (unit
+    tests, modes without vector sync), eviction falls back to running inline
+    in a local task group. Eviction failures are logged but never propagated.
 
     Args:
         client: Authenticated NextcloudClient (must expose ``username``).
@@ -312,6 +336,10 @@ async def verify_search_results(
         evict_on_missing: Schedule lazy eviction for inaccessible docs.
         max_concurrent: Cap on concurrent verification round-trips against
             Nextcloud. Defaults to ``DEFAULT_VERIFICATION_CONCURRENCY``.
+        eviction_task_group: Optional long-lived task group on which to
+            spawn fire-and-forget eviction. Pass
+            ``ctx.request_context.lifespan_context.eviction_task_group``
+            from FastMCP tools.
 
     Returns:
         Filtered list preserving the original order.
@@ -385,10 +413,19 @@ async def verify_search_results(
     # list still contains all chunks).
     kept = [r for r in results if (r.id, r.doc_type) not in inaccessible]
 
-    # Lazy eviction. Runs inline before returning — slow Qdrant will delay
-    # the search response. Background eviction would need a task registered
-    # on the lifespan context; the inline approach is acceptable given
-    # typical Qdrant delete latency, but callers should be aware.
+    # Lazy eviction.
+    #
+    # Preferred path: spawn evict() on the lifespan-owned task group via
+    # `start_soon`, which returns immediately — the search response is not
+    # blocked on Qdrant deletes. If the server is shutting down, the task
+    # group is cleared back to None (see app.py) and we fall through to the
+    # inline path. Cancellation mid-eviction is fine: the next query will
+    # re-verify and re-attempt (self-healing per ADR-019).
+    #
+    # Fallback path: when no task group is supplied (unit tests, deployment
+    # modes without vector sync), run eviction inline in a local task group.
+    # This preserves prior behaviour for tests that rely on eviction being
+    # complete by the time `verify_search_results` returns.
     if evict_on_missing and inaccessible:
 
         async def evict(doc_id: int | str, doc_type: str) -> None:
@@ -399,8 +436,12 @@ async def verify_search_results(
                     "Failed to evict %s_%s from Qdrant: %s", doc_type, doc_id, e
                 )
 
-        async with anyio.create_task_group() as tg:
+        if eviction_task_group is not None:
             for doc_id, doc_type in inaccessible:
-                tg.start_soon(evict, doc_id, doc_type)
+                eviction_task_group.start_soon(evict, doc_id, doc_type)
+        else:
+            async with anyio.create_task_group() as tg:
+                for doc_id, doc_type in inaccessible:
+                    tg.start_soon(evict, doc_id, doc_type)
 
     return kept

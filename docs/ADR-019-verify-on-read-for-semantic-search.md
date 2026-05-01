@@ -225,5 +225,5 @@ In `server/semantic.py::nc_semantic_search_answer`, replace the per-type `if res
 - [ ] Update existing docstrings in `search/semantic.py:52` and `search/bm25_hybrid.py:75` to point at the new helper.
 - [ ] Unit tests: each verifier handles 200/403/404/transient distinctly; dedup collapses chunks; eviction is scheduled on `False`.
 - [ ] Integration test: index a note, delete via API (no webhook), confirm the next semantic search does not return it.
-- [ ] CI guard: enumerate indexed doc_types in `vector/scanner.py` and assert each has a registered verifier.
-- [ ] Document the latency budget and rate-limit posture in `docs/configuration.md`.
+- [x] CI guard: enumerate indexed doc_types in `vector/scanner.py` and assert each has a registered verifier. (`INDEXED_DOC_TYPES` in `vector/scanner.py`; `tests/unit/search/test_verification.py::test_supported_doc_types_covers_indexed_types`.)
+- [x] Document the latency budget and rate-limit posture in `docs/configuration.md`. (See "Verify-on-Read Latency Budget" section.)
