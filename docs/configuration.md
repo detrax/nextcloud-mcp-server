@@ -489,10 +489,11 @@ aware of:
   unique documents, so verification adds 3-5 round-trips. With the default
   20-way concurrency this is one parallel batch — usually under 100 ms on a
   healthy connection.
-- **Concurrency**: all verifications fan out under a shared semaphore
-  (`DEFAULT_VERIFICATION_CONCURRENCY = 20` in `search/verification.py`). The
-  limit is not currently exposed as an env var; if production workloads
-  saturate Nextcloud, consider opening an issue to make it tunable.
+- **Concurrency**: all verifications fan out under a shared semaphore.
+  Tunable via the `VERIFICATION_CONCURRENCY` env var (settings field
+  `verification_concurrency`, default 20) — lower it if your Nextcloud
+  backend struggles with the parallel fan-out, or raise it on a healthy
+  connection to speed up large result pages.
 - **News API caveat**: the News app has no per-item endpoint, so the news
   verifier issues a single `news.get_items(batch_size=-1, get_read=True)` call
   per search that contains any news result, then intersects locally. The

@@ -65,6 +65,8 @@ _DEFAULTS: dict[str, Any] = {
     "vector_sync_processor_workers": 3,
     "vector_sync_queue_max_size": 10000,
     "vector_sync_user_poll_interval": 60,
+    # Verify-on-read concurrency cap (ADR-019)
+    "verification_concurrency": 20,
     # Qdrant
     "qdrant_url": None,
     "qdrant_location": None,
@@ -170,6 +172,7 @@ _dynaconf = Dynaconf(
         Validator("VECTOR_SYNC_PROCESSOR_WORKERS", gte=1),
         Validator("VECTOR_SYNC_QUEUE_MAX_SIZE", gte=1),
         Validator("VECTOR_SYNC_USER_POLL_INTERVAL", gte=1),
+        Validator("VERIFICATION_CONCURRENCY", gte=1),
         Validator("DOCUMENT_CHUNK_SIZE", gte=1),
         # Non-negative
         Validator("DOCUMENT_CHUNK_OVERLAP", gte=0),
@@ -454,6 +457,12 @@ class Settings:
     vector_sync_processor_workers: int = 3
     vector_sync_queue_max_size: int = 10000
     vector_sync_user_poll_interval: int = 60  # seconds - OAuth mode user discovery
+
+    # Verify-on-read concurrency (ADR-019). Cap on parallel Nextcloud
+    # round-trips during search-result verification fan-out. Lower this if the
+    # Nextcloud backend struggles with the parallel load; raise it on a
+    # healthy connection to speed up large result pages.
+    verification_concurrency: int = 20
 
     # Qdrant settings (mutually exclusive modes)
     qdrant_url: str | None = None  # Network mode: http://qdrant:6333
@@ -793,6 +802,8 @@ def get_settings() -> Settings:
         "vector_sync_processor_workers": "VECTOR_SYNC_PROCESSOR_WORKERS",
         "vector_sync_queue_max_size": "VECTOR_SYNC_QUEUE_MAX_SIZE",
         "vector_sync_user_poll_interval": "VECTOR_SYNC_USER_POLL_INTERVAL",
+        # Verify-on-read (ADR-019)
+        "verification_concurrency": "VERIFICATION_CONCURRENCY",
         # Qdrant settings
         "qdrant_url": "QDRANT_URL",
         "qdrant_location": "QDRANT_LOCATION",

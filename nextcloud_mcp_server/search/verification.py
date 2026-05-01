@@ -38,15 +38,11 @@ import anyio
 from anyio.abc import TaskGroup
 from httpx import HTTPStatusError
 
+from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.vector.eviction import delete_document_points
 
 logger = logging.getLogger(__name__)
-
-
-# Default cap on concurrent verification round-trips against Nextcloud. Matches
-# the convention in ``server/semantic.py`` for context-expansion fan-out.
-DEFAULT_VERIFICATION_CONCURRENCY = 20
 
 
 BatchVerifier = Callable[
@@ -73,10 +69,24 @@ async def _verify_notes(
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
+        doc_id = result.id
+        # Parse defensively before the network call so a malformed payload
+        # produces a specific log line, not a generic "unexpected error" from
+        # the catch-all ``except Exception`` below. Mirrors ``_verify_deck_cards``.
+        try:
+            note_id_int = int(doc_id)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Non-numeric note id %r: %s; keeping result",
+                doc_id,
+                e,
+            )
+            accessible.add(doc_id)
+            return
+
         async with semaphore:
-            doc_id = result.id
             try:
-                await client.notes.get_note(int(doc_id))
+                await client.notes.get_note(note_id_int)
                 accessible.add(doc_id)
             except HTTPStatusError as e:
                 if _is_definitive_404_or_403(e):
@@ -260,6 +270,14 @@ async def _verify_news_items(
             # a per-item News API endpoint. The shared semaphore protects
             # against runaway concurrent fetches, but the payload itself can
             # be large (News auto-purge cap is in the thousands of items).
+            #
+            # NOTE: ``batch_size`` is intentionally unbounded (-1). A numeric
+            # ceiling here would silently *break correctness*: any item beyond
+            # the cap would be missing from ``present_ids`` and incorrectly
+            # dropped from the result set. The fail-open contract requires
+            # fetching every item the user has access to. See the news caveat
+            # in docs/configuration.md (Verify-on-Read) for the latency
+            # tradeoff and follow-up paths.
             items = await client.news.get_items(batch_size=-1, get_read=True)
         except HTTPStatusError as e:
             # If the News API itself is gone (app disabled, user lost access),
@@ -335,7 +353,7 @@ async def verify_search_results(
     results: list[SearchResult],
     *,
     evict_on_missing: bool = True,
-    max_concurrent: int = DEFAULT_VERIFICATION_CONCURRENCY,
+    max_concurrent: int | None = None,
     eviction_task_group: TaskGroup | None = None,
 ) -> list[SearchResult]:
     """Filter search results to those the user can currently access.
@@ -359,7 +377,9 @@ async def verify_search_results(
             multiple chunks per document).
         evict_on_missing: Schedule lazy eviction for inaccessible docs.
         max_concurrent: Cap on concurrent verification round-trips against
-            Nextcloud. Defaults to ``DEFAULT_VERIFICATION_CONCURRENCY``.
+            Nextcloud. When ``None`` (the default), resolved from
+            ``Settings.verification_concurrency`` (env var
+            ``VERIFICATION_CONCURRENCY``, default 20).
         eviction_task_group: Optional long-lived task group on which to
             spawn fire-and-forget eviction. Pass
             ``ctx.request_context.lifespan_context.eviction_task_group``
@@ -372,6 +392,9 @@ async def verify_search_results(
         return results
 
     user_id: str = client.username
+
+    if max_concurrent is None:
+        max_concurrent = get_settings().verification_concurrency
 
     # Group unique (doc_id, doc_type) by doc_type so each verifier sees a
     # deduplicated batch. We pick one SearchResult per (id, doc_type) to carry

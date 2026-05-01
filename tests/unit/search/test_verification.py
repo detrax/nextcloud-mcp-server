@@ -138,6 +138,24 @@ async def test_verify_notes_unexpected_exception_keeps(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_notes_non_numeric_id_keeps(mocker):
+    """Non-numeric note id must not surface as a generic 'unexpected error'.
+
+    The defensive int() guard runs before the network call and produces a
+    type-specific log line; result is kept (fail-open).
+    """
+    notes_client = SimpleNamespace(
+        get_note=mocker.AsyncMock(side_effect=AssertionError("must not be called"))
+    )
+    client = SimpleNamespace(notes=notes_client, username="alice")
+
+    result = await _verify_notes(client, [_make_result("not-a-number")], _sem())
+
+    assert result == {"not-a-number"}
+    notes_client.get_note.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_verify_notes_mixed_outcomes(mocker):
     """Mix of accessible, deleted, and transient — only deleted is dropped."""
 
@@ -208,6 +226,27 @@ async def test_verify_news_items_api_404_drops_all(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_news_items_api_403_drops_all(mocker):
+    """News API 403 (e.g. user lost access to the app) drops all items."""
+    news_client = SimpleNamespace(
+        get_items=mocker.AsyncMock(side_effect=_http_error(403))
+    )
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(1, doc_type="news_item"),
+            _make_result(2, doc_type="news_item"),
+            _make_result(3, doc_type="news_item"),
+        ],
+        _sem(),
+    )
+
+    assert result == set()
+
+
+@pytest.mark.unit
 async def test_verify_news_items_transient_keeps_all(mocker):
     news_client = SimpleNamespace(
         get_items=mocker.AsyncMock(side_effect=_http_error(502))
@@ -259,6 +298,23 @@ async def test_verify_files_404_via_get_file_info_drops(mocker):
     result = await _verify_files(
         client,
         [_make_result(123, doc_type="file", metadata={"path": "gone.txt"})],
+        _sem(),
+    )
+
+    assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_files_403_drops(mocker):
+    """get_file_info raising HTTPStatusError(403) is a definitive drop."""
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=_http_error(403))
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="alice")
+
+    result = await _verify_files(
+        client,
+        [_make_result(124, doc_type="file", metadata={"path": "forbidden.txt"})],
         _sem(),
     )
 

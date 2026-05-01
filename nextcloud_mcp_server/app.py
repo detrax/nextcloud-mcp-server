@@ -323,7 +323,7 @@ class VectorSyncState:
     # Long-lived task group used for fire-and-forget background work spawned
     # from the request path (e.g. ADR-019 verify-on-read eviction). Set by the
     # starlette lifespan after entering its task group; cleared on shutdown.
-    eviction_task_group: Optional[TaskGroup] = None
+    eviction_task_group: TaskGroup | None = None
 
 
 # Module-level singleton for vector sync state
@@ -340,7 +340,15 @@ class AppContext:
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
-    eviction_task_group: Optional[TaskGroup] = None
+
+    @property
+    def eviction_task_group(self) -> TaskGroup | None:
+        # Read dynamically from the module-level singleton instead of
+        # snapshotting at lifespan-yield time. Snapshotting is order-sensitive:
+        # if the FastMCP server lifespan ever runs before the Starlette
+        # lifespan assigns the task group, every session for the life of the
+        # process would see ``None`` and fall back to inline eviction.
+        return _vector_sync_state.eviction_task_group
 
 
 @dataclass
@@ -359,7 +367,11 @@ class OAuthAppContext:
     document_receive_stream: Optional[MemoryObjectReceiveStream] = None
     shutdown_event: Optional[anyio.Event] = None
     scanner_wake_event: Optional[anyio.Event] = None
-    eviction_task_group: Optional[TaskGroup] = None
+
+    @property
+    def eviction_task_group(self) -> TaskGroup | None:
+        # See AppContext.eviction_task_group for rationale.
+        return _vector_sync_state.eviction_task_group
 
 
 class BasicAuthMiddleware:
@@ -576,7 +588,8 @@ async def app_lifespan_basic(server: FastMCP) -> AsyncIterator[AppContext]:
             document_receive_stream=_vector_sync_state.document_receive_stream,
             shutdown_event=_vector_sync_state.shutdown_event,
             scanner_wake_event=_vector_sync_state.scanner_wake_event,
-            eviction_task_group=_vector_sync_state.eviction_task_group,
+            # eviction_task_group is exposed via @property (reads
+            # _vector_sync_state at access time, not snapshot).
         )
     finally:
         logger.info("Shutting down BasicAuth session")
@@ -1197,7 +1210,8 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                     document_receive_stream=_vector_sync_state.document_receive_stream,
                     shutdown_event=_vector_sync_state.shutdown_event,
                     scanner_wake_event=_vector_sync_state.scanner_wake_event,
-                    eviction_task_group=_vector_sync_state.eviction_task_group,
+                    # eviction_task_group is exposed via @property (reads
+                    # _vector_sync_state at access time, not snapshot).
                 )
             finally:
                 logger.info("Shutting down MCP server")
