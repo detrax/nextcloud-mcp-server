@@ -189,12 +189,31 @@ async def _verify_deck_cards(
             accessible.add(doc_id)
             return
 
+        # Parse defensively before the network call so a malformed payload
+        # produces a specific log line, not a generic "unexpected error" from
+        # the catch-all ``except Exception`` below. Mirrors ``_verify_news_items``.
+        try:
+            board_id_int = int(board_id)
+            stack_id_int = int(stack_id)
+            card_id_int = int(doc_id)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Non-numeric deck metadata for card %s "
+                "(board_id=%r, stack_id=%r): %s; keeping result",
+                doc_id,
+                board_id,
+                stack_id,
+                e,
+            )
+            accessible.add(doc_id)
+            return
+
         async with semaphore:
             try:
                 await client.deck.get_card(
-                    board_id=int(board_id),
-                    stack_id=int(stack_id),
-                    card_id=int(doc_id),
+                    board_id=board_id_int,
+                    stack_id=stack_id_int,
+                    card_id=card_id_int,
                 )
                 accessible.add(doc_id)
             except HTTPStatusError as e:
@@ -236,6 +255,11 @@ async def _verify_news_items(
 
     async with semaphore:
         try:
+            # TODO(perf): if profiling shows this fetch dominates query latency
+            # for news-heavy users, cache the per-request item set or push for
+            # a per-item News API endpoint. The shared semaphore protects
+            # against runaway concurrent fetches, but the payload itself can
+            # be large (News auto-purge cap is in the thousands of items).
             items = await client.news.get_items(batch_size=-1, get_read=True)
         except HTTPStatusError as e:
             # If the News API itself is gone (app disabled, user lost access),

@@ -5,6 +5,17 @@ instance — the verification path's whole purpose is to consult Nextcloud as
 the source of truth, so unit-level mocks don't catch protocol or status-code
 mismatches between our verifier and the real API.
 
+**Coverage**: only the ``note`` verifier is exercised against real Nextcloud
+here. The ``file`` (WebDAV PROPFIND), ``deck_card`` (Deck app), and
+``news_item`` (News app) verifiers are unit-tested with mocked HTTP
+responses in ``tests/unit/search/test_verification.py``. Adding integration
+coverage for those types is tracked as a follow-up — it requires fixture
+data (tagged PDFs in user files, a Deck board with cards, a News feed) that
+is non-trivial to seed from CI. The mocked unit tests are accurate for
+status-code semantics but won't catch payload-shape regressions in those
+Nextcloud apps; the trade-off is documented here so future readers know
+which suite owns which verifier.
+
 Qdrant is mocked out (``delete_document_points`` and the payload-resolution
 helpers) so these tests don't require a running vector database. The unit
 suite in ``tests/unit/search/test_verification.py`` covers the Qdrant-side

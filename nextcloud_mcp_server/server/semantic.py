@@ -120,11 +120,20 @@ def configure_semantic_tools(mcp: FastMCP):
 
             if doc_types is None:
                 # Cross-app search: search all indexed types
-                # Get unverified results from Qdrant
+                # Get unverified results from Qdrant.
+                #
+                # NOTE (ADR-019): Over-fetch by 2× to absorb ghost-record drops
+                # during verify-on-read. When ghost density is high (e.g. a
+                # large board share was just revoked) this budget can still
+                # under-deliver against the requested ``limit``; the index
+                # self-heals via lazy eviction so subsequent searches recover.
+                # The 2× factor is a deliberate v1 trade-off — raising it
+                # costs Nextcloud round-trips on every search. Trim to
+                # ``limit`` happens AFTER verification.
                 unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
-                    limit=limit * 2,  # Get extra for access filtering
+                    limit=limit * 2,
                     doc_type=None,  # Signal to search all types
                     score_threshold=score_threshold,
                 )
@@ -132,11 +141,12 @@ def configure_semantic_tools(mcp: FastMCP):
             else:
                 # Search specific document types
                 # For each requested type, execute search and combine results
+                # under the same 2× over-fetch budget (see NOTE above).
                 for dtype in doc_types:
                     unverified_results = await search_algo.search(
                         query=query,
                         user_id=username,
-                        limit=limit * 2,  # Get extra for combining and filtering
+                        limit=limit * 2,
                         doc_type=dtype,
                         score_threshold=score_threshold,
                     )
@@ -169,12 +179,18 @@ def configure_semantic_tools(mcp: FastMCP):
             )
             search_results = verified_results[:limit]
 
-            # Convert SearchResult objects to SemanticSearchResult for response
+            # Convert SearchResult objects to SemanticSearchResult for response.
+            # SearchResult.id is typed `int | str` for forward-compat with future
+            # doc_types, but every currently indexed type uses numeric ids and
+            # the MCP response model narrows to `int`. Casting here makes the
+            # narrowing explicit and surfaces any future string-id type as a
+            # loud failure at the boundary instead of silently widening the
+            # public API.
             results = []
             for r in search_results:
                 results.append(
                     SemanticSearchResult(
-                        id=r.id,
+                        id=int(r.id),
                         doc_type=r.doc_type,
                         title=r.title,
                         category=r.metadata.get("category", "") if r.metadata else "",

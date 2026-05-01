@@ -73,16 +73,24 @@ The vector index becomes a **hint**, not a contract. We never trust it for acces
 ```python
 # nextcloud_mcp_server/search/verification.py
 
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable
 import anyio
 import httpx
 
 from nextcloud_mcp_server.search.algorithms import SearchResult
 
-# A verifier returns True if the document is currently accessible to the user.
-# It MUST distinguish definitive 404/403 (return False) from transient errors
-# (raise — caller will keep the result and log a warning).
-Verifier = Callable[["NextcloudClientProtocol", int | str], Awaitable[bool]]
+# A batch verifier takes a list of results for a single doc_type and returns
+# the set of doc_ids that are currently accessible to the user. The shared
+# semaphore caps concurrent Nextcloud round-trips across all verifier types.
+#
+# - Definitive 403/404 → omit the id from the returned set (drop the result).
+# - Transient error (5xx, network, parse) → include the id (fail-open keep).
+# - Verifier crash → caught by the dispatcher and treated as transient
+#   (all results for that type are kept; logged distinctly).
+BatchVerifier = Callable[
+    ["NextcloudClientProtocol", list[SearchResult], anyio.Semaphore],
+    Awaitable[set[int | str]],
+]
 
 
 async def verify_search_results(
@@ -91,56 +99,98 @@ async def verify_search_results(
     *,
     max_concurrent: int = 20,
     evict_on_missing: bool = True,
+    eviction_task_group: anyio.abc.TaskGroup | None = None,
 ) -> list[SearchResult]:
     """Filter search results to those the user can currently access.
 
     Deduplicates by (doc_id, doc_type) before verifying, so multiple chunks
-    from the same document cost a single check. Verifies concurrently under
-    a semaphore. Drops results whose verifier returned False; keeps results
-    whose verifier raised (transient failure should not produce silent gaps).
+    from the same document cost a single check. Each verifier owns its own
+    concurrency under the shared semaphore. Drops results whose verifier
+    omitted them; keeps results whose verifier raised or whose doc_type has
+    no registered verifier (transient failure should not silently shrink
+    results).
 
     When evict_on_missing=True, schedules async deletion of the Qdrant points
     for the missing document(s) so subsequent queries don't re-pay the cost.
+    Pass ``eviction_task_group`` (typically the lifespan-owned background task
+    group) to make eviction fire-and-forget; without it we run a local task
+    group that blocks the response until evictions complete.
     """
 ```
+
+**Why batch?** A per-id `Verifier` would force one task-group creation per id, multiply the number of small tasks, and prevent the news single-fetch optimization (the News API has no per-item endpoint, so per-id verification would be O(N × all_items)). The batch interface lets each verifier own its own concurrency strategy: notes/files/deck cards parallelize per id under the shared semaphore; news fetches once and intersects.
 
 ### Verifier registry
 
 ```python
-_VERIFIERS: dict[str, Verifier] = {
-    "note": _verify_note,
-    "news_item": _verify_news_item,
-    "file": _verify_file,
-    "deck_card": _verify_deck_card,
+_VERIFIERS: dict[str, BatchVerifier] = {
+    "note": _verify_notes,
+    "news_item": _verify_news_items,
+    "file": _verify_files,
+    "deck_card": _verify_deck_cards,
 }
 ```
 
-Each verifier follows the same pattern:
+Each verifier follows the same shape — accept a list of results for its type, fan out per-id under the shared semaphore (or fetch once and intersect, for news), and return the set of accessible ids:
 
 ```python
-async def _verify_note(client, doc_id: int) -> bool:
-    try:
-        await client.notes.get_note(int(doc_id))
-        return True
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code in (403, 404):
-            return False
-        raise  # transient — caller keeps the result
+async def _verify_notes(
+    client,
+    results: list[SearchResult],
+    semaphore: anyio.Semaphore,
+) -> set[int | str]:
+    accessible: set[int | str] = set()
+
+    async def check(result: SearchResult) -> None:
+        async with semaphore:
+            try:
+                await client.notes.get_note(int(result.id))
+                accessible.add(result.id)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (403, 404):
+                    return  # definitive — drop
+                accessible.add(result.id)  # transient — keep
+
+    async with anyio.create_task_group() as tg:
+        for r in results:
+            tg.start_soon(check, r)
+    return accessible
 ```
 
-For `file`, use `webdav` PROPFIND (`Depth: 0`) on the `file_path` from the Qdrant payload, not `read_file()`. For `deck_card`, use the cached `(board_id, stack_id)` from `_get_deck_metadata_from_qdrant`; if metadata is absent, treat the result as accessible and log — we will not run the iteration fallback in the hot path.
+For `file`, use WebDAV PROPFIND (`Depth: 0`) on the `file_path` from the Qdrant payload, not `read_file()`. For `deck_card`, use the cached `(board_id, stack_id)` from `_get_deck_metadata_from_qdrant`; if metadata is absent, treat the result as accessible and log — we will not run the iteration fallback in the hot path. For `news_item`, batch-fetch the user's items once via `get_items(batch_size=-1)` and intersect, since the News API has no per-item endpoint.
 
 ### Deduplication
 
-A 10-result page typically references 3–4 unique documents because of chunking. Verify each unique `(doc_id, doc_type)` once, then propagate the verdict to all chunks of that document:
+A 10-result page typically references 3–4 unique documents because of chunking. Dedupe by `(doc_id, doc_type)` *before* invoking the verifiers, so each batch verifier sees only unique ids. The dispatcher then propagates each id's verdict to every chunk of that document:
 
 ```python
-unique_keys = {(r.id, r.doc_type) for r in results}
-verdicts = {key: await _verify(client, key) for key in unique_keys}  # via task group
-return [r for r in results if verdicts.get((r.id, r.doc_type), True)]
+unique: list[SearchResult] = []
+seen: set[tuple[int | str, str]] = set()
+for r in results:
+    key = (r.id, r.doc_type)
+    if key not in seen:
+        seen.add(key)
+        unique.append(r)
+
+# Group unique results by doc_type and run their batch verifiers in parallel.
+by_type: dict[str, list[SearchResult]] = group_by_doc_type(unique)
+accessible_by_type: dict[str, set[int | str]] = {}
+async with anyio.create_task_group() as tg:
+    for dtype, items in by_type.items():
+        verifier = _VERIFIERS.get(dtype)
+        if verifier is None:
+            # Soft failure: keep all results for unknown doc_types.
+            accessible_by_type[dtype] = {r.id for r in items}
+            continue
+        tg.start_soon(_run_verifier, verifier, dtype, items, accessible_by_type)
+
+return [
+    r for r in results
+    if r.id in accessible_by_type.get(r.doc_type, set())
+]
 ```
 
-A failed verification (raised exception) maps to "keep" — we do not want a flaky network blip to silently shrink results.
+A verifier crash maps to "keep all" for that type — we do not want a flaky network blip to silently shrink results.
 
 ### Lazy eviction
 
@@ -217,13 +267,13 @@ In `server/semantic.py::nc_semantic_search_answer`, replace the per-type `if res
 
 ## Implementation Checklist
 
-- [ ] Create `nextcloud_mcp_server/search/verification.py` with `verify_search_results()` and the verifier registry.
-- [ ] Implement `_verify_note`, `_verify_news_item`, `_verify_file` (PROPFIND), `_verify_deck_card` (metadata fast-path only).
-- [ ] Add `delete_document_points()` in `vector/placeholder.py` (or a new `vector/eviction.py`) for non-placeholder filter-based deletes.
-- [ ] Wire into `nc_semantic_search` with `limit * 2` over-fetch, trim to `limit` after verification.
-- [ ] Wire into `nc_semantic_search_answer`, replacing the per-type note branch.
-- [ ] Update existing docstrings in `search/semantic.py:52` and `search/bm25_hybrid.py:75` to point at the new helper.
-- [ ] Unit tests: each verifier handles 200/403/404/transient distinctly; dedup collapses chunks; eviction is scheduled on `False`.
-- [ ] Integration test: index a note, delete via API (no webhook), confirm the next semantic search does not return it.
+- [x] Create `nextcloud_mcp_server/search/verification.py` with `verify_search_results()` and the verifier registry.
+- [x] Implement `_verify_notes`, `_verify_news_items`, `_verify_files` (PROPFIND), `_verify_deck_cards` (metadata fast-path only). Names plural to reflect the batch-verifier interface (see "Module shape" above).
+- [x] Add `delete_document_points()` in `nextcloud_mcp_server/vector/eviction.py` for non-placeholder filter-based deletes.
+- [x] Wire into `nc_semantic_search` with `limit * 2` over-fetch, trim to `limit` after verification.
+- [x] Wire into `nc_semantic_search_answer`; verification runs upstream in `nc_semantic_search`, and the note-only re-fetch is retained as a sub-second race guard.
+- [x] Update existing docstrings in `search/semantic.py` and `search/bm25_hybrid.py` to reflect the new verify-on-read path.
+- [x] Unit tests: each verifier handles 200/403/404/transient distinctly; dedup collapses chunks; eviction is scheduled on missing.
+- [x] Integration test: index a note, delete via API (no webhook), confirm the next semantic search does not return it. (See `tests/integration/test_verify_on_read.py`. Coverage gap for `file`, `deck_card`, `news_item` integration tests is tracked as a follow-up.)
 - [x] CI guard: enumerate indexed doc_types in `vector/scanner.py` and assert each has a registered verifier. (`INDEXED_DOC_TYPES` in `vector/scanner.py`; `tests/unit/search/test_verification.py::test_supported_doc_types_covers_indexed_types`.)
 - [x] Document the latency budget and rate-limit posture in `docs/configuration.md`. (See "Verify-on-Read Latency Budget" section.)

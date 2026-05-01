@@ -10,11 +10,13 @@ from .base import BaseResponse
 class SemanticSearchResult(BaseModel):
     """Model for semantic search results with additional metadata."""
 
-    id: int | str = Field(
+    id: int = Field(
         description=(
             "Document ID. Numeric for all currently indexed types (notes, files, "
-            "deck cards, news items); typed as int|str to allow future doc types "
-            "that use string identifiers."
+            "deck cards, news items). The internal SearchResult.id is typed as "
+            "int|str to leave room for future doc types with string identifiers; "
+            "the MCP response narrows to int and a future widening here would be "
+            "a deliberate, breaking-by-design API change."
         )
     )
     doc_type: str = Field(
