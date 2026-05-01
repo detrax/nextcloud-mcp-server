@@ -60,9 +60,11 @@ variable "allow_secret_create" {
 
 variable "route53_zone_ids" {
   description = <<-EOT
-    Route53 hosted zone IDs the deployer is allowed to mutate. Only needed
-    in the module's custom-domain mode. Leave empty (the default) for the
-    CloudFront-default-cert path, which requires no DNS or ACM permissions.
+    Route53 public hosted zone IDs the deployer is allowed to mutate. The
+    server module always creates Route53 records (ALB alias + ACM DNS-01
+    validation), so this should be set to the zone(s) the module's
+    `zone_id` input points at. Leaving it empty falls back to `*` as a
+    convenience but is not recommended in production — scope it.
   EOT
   type        = list(string)
   default     = []

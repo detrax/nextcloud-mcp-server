@@ -228,8 +228,8 @@ module "nextcloud_mcp_server" {
   secret_arn = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:nextcloud-mcp-aws-env-XXXXXX"
 
   use_external_qdrant = true
-  qdrant_image_tag    = "unused" # required input but ignored when use_external_qdrant=true
   qdrant_collection   = "nextcloud-mcp"
+  # qdrant_image_tag intentionally omitted — only required when use_external_qdrant = false.
 }
 ```
 

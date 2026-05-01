@@ -22,7 +22,9 @@ output "ecs_service_name" {
 }
 
 output "efs_id" {
-  value = aws_efs_file_system.this.id
+  description = "EFS file-system ID. Marked sensitive — surfacing it in CI logs invites enumeration of mount targets."
+  value       = aws_efs_file_system.this.id
+  sensitive   = true
 }
 
 output "log_group_name" {
@@ -30,7 +32,9 @@ output "log_group_name" {
 }
 
 output "task_role_arn" {
-  value = aws_iam_role.task.arn
+  description = "Task role ARN. Marked sensitive — knowing the ARN is the first step to abusing it via SSRF/role-confusion."
+  value       = aws_iam_role.task.arn
+  sensitive   = true
 }
 
 output "alb_dns_name" {
@@ -43,6 +47,6 @@ output "qdrant_service_name" {
 }
 
 output "qdrant_dns_name" {
-  description = "Internal DNS name where mcp-server reaches qdrant"
-  value       = "qdrant.${aws_service_discovery_private_dns_namespace.this.name}"
+  description = "Internal DNS name where mcp-server reaches qdrant (null when use_external_qdrant = true)."
+  value       = var.use_external_qdrant ? null : "qdrant.${aws_service_discovery_private_dns_namespace.this.name}"
 }

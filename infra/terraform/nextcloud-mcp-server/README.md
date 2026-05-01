@@ -3,6 +3,7 @@
 
 | Name | Version |
 | ---- | ------- |
+| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.9 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.0 |
 | <a name="requirement_random"></a> [random](#requirement\_random) | ~> 3.6 |
 
@@ -10,8 +11,8 @@
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.43.0 |
-| <a name="provider_random"></a> [random](#provider\_random) | 3.8.1 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.0 |
+| <a name="provider_random"></a> [random](#provider\_random) | ~> 3.6 |
 
 ## Modules
 
@@ -58,6 +59,7 @@ No modules.
 | [aws_service_discovery_private_dns_namespace.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/service_discovery_private_dns_namespace) | resource |
 | [aws_service_discovery_service.qdrant](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/service_discovery_service) | resource |
 | [aws_vpc_security_group_egress_rule.alb_all_v4](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
+| [aws_vpc_security_group_egress_rule.alb_all_v6](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
 | [aws_vpc_security_group_egress_rule.qdrant_all_v4](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
 | [aws_vpc_security_group_egress_rule.qdrant_all_v6](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
 | [aws_vpc_security_group_egress_rule.task_all_v4](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_security_group_egress_rule) | resource |
@@ -100,7 +102,7 @@ No modules.
 | <a name="input_qdrant_collection"></a> [qdrant\_collection](#input\_qdrant\_collection) | Qdrant collection name. Set to a stable value (anything other than upstream's default 'nextcloud\_content') so the upstream config doesn't fall through to its hostname-based auto-naming, which churns the collection on every rolling deploy. | `string` | `"nextcloud-mcp"` | no |
 | <a name="input_qdrant_cpu"></a> [qdrant\_cpu](#input\_qdrant\_cpu) | Qdrant Fargate task vCPU units (1024 = 1 vCPU) | `number` | `512` | no |
 | <a name="input_qdrant_image"></a> [qdrant\_image](#input\_qdrant\_image) | Qdrant container image (without tag) | `string` | `"qdrant/qdrant"` | no |
-| <a name="input_qdrant_image_tag"></a> [qdrant\_image\_tag](#input\_qdrant\_image\_tag) | Qdrant container image tag (e.g., v1.15.0). Pin to a specific release; avoid :latest. Unused when use\_external\_qdrant = true. | `string` | n/a | yes |
+| <a name="input_qdrant_image_tag"></a> [qdrant\_image\_tag](#input\_qdrant\_image\_tag) | Qdrant container image tag (e.g., v1.15.0). Pin to a specific release; avoid :latest. Required only when use\_external\_qdrant = false; omit (or pass null) when use\_external\_qdrant = true. | `string` | `null` | no |
 | <a name="input_qdrant_memory"></a> [qdrant\_memory](#input\_qdrant\_memory) | Qdrant Fargate task memory (MiB) | `number` | `1024` | no |
 | <a name="input_secret_arn"></a> [secret\_arn](#input\_secret\_arn) | ARN of the Secrets Manager secret holding JSON {host, client\_id, client\_secret, token\_encryption\_key, webhook\_secret} | `string` | n/a | yes |
 | <a name="input_use_external_qdrant"></a> [use\_external\_qdrant](#input\_use\_external\_qdrant) | When true, skip the in-AWS Qdrant ECS task and source QDRANT\_URL/QDRANT\_API\_KEY from the Secrets Manager secret (keys: qdrant\_url, qdrant\_api\_key). When false, run an in-AWS Qdrant Fargate task and point the MCP server at it via Cloud Map DNS. | `bool` | `false` | no |
@@ -117,12 +119,12 @@ No modules.
 | <a name="output_alb_dns_name"></a> [alb\_dns\_name](#output\_alb\_dns\_name) | n/a |
 | <a name="output_ecs_cluster_name"></a> [ecs\_cluster\_name](#output\_ecs\_cluster\_name) | n/a |
 | <a name="output_ecs_service_name"></a> [ecs\_service\_name](#output\_ecs\_service\_name) | n/a |
-| <a name="output_efs_id"></a> [efs\_id](#output\_efs\_id) | n/a |
+| <a name="output_efs_id"></a> [efs\_id](#output\_efs\_id) | EFS file-system ID. Marked sensitive — surfacing it in CI logs invites enumeration of mount targets. |
 | <a name="output_fqdn"></a> [fqdn](#output\_fqdn) | Fully-qualified domain name |
 | <a name="output_log_group_name"></a> [log\_group\_name](#output\_log\_group\_name) | n/a |
-| <a name="output_qdrant_dns_name"></a> [qdrant\_dns\_name](#output\_qdrant\_dns\_name) | Internal DNS name where mcp-server reaches qdrant |
+| <a name="output_qdrant_dns_name"></a> [qdrant\_dns\_name](#output\_qdrant\_dns\_name) | Internal DNS name where mcp-server reaches qdrant (null when use\_external\_qdrant = true). |
 | <a name="output_qdrant_service_name"></a> [qdrant\_service\_name](#output\_qdrant\_service\_name) | Qdrant ECS service name (null when use\_external\_qdrant = true) |
 | <a name="output_subdomain"></a> [subdomain](#output\_subdomain) | Generated random subdomain (label only, without the zone) |
-| <a name="output_task_role_arn"></a> [task\_role\_arn](#output\_task\_role\_arn) | n/a |
+| <a name="output_task_role_arn"></a> [task\_role\_arn](#output\_task\_role\_arn) | Task role ARN. Marked sensitive — knowing the ARN is the first step to abusing it via SSRF/role-confusion. |
 | <a name="output_url"></a> [url](#output\_url) | Public HTTPS URL of the MCP server |
 <!-- END_TF_DOCS -->

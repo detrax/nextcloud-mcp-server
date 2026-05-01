@@ -15,15 +15,26 @@ IAM role and least-privilege policy scoped to deploy the
   client will use — so any "works for me, breaks for them" gap surfaces in
   testing rather than at the client.
 
-## Modes
+## What the policy grants
 
-The role's permissions are mode-aware via inputs:
+Always granted (the server module always creates these resources):
 
-| Mode | Inputs | What gets granted |
-|---|---|---|
-| **CloudFront default cert** (recommended) | (defaults) | ECS, ALB, EFS, CloudFront, scoped IAM/logs/secrets, EC2 SG + describe |
-| **Custom domain** | `route53_zone_ids = [...]` | + Route53 (scoped to listed zones) and ACM |
-| **Secret managed in same TF** | `allow_secret_create = true` | + Secrets Manager create/update/delete (scoped to `secret_name_prefix`) |
+- ECS, ALB, EFS, Cloud Map (servicediscovery), Bedrock describe
+- ACM cert management (scoped action set, resources `*` since cert ARNs
+  aren't known at policy-write time)
+- Route53 hosted-zone reads + private-zone CRUD (Cloud Map needs the
+  latter); record-set mutation is scoped to caller-supplied zones via
+  `route53_zone_ids`
+- IAM (scoped to `role/ecs/${module_name_prefix}-*`), CloudWatch Logs
+  (scoped to `/ecs/${module_name_prefix}*`), Secrets Manager read (scoped
+  to `${secret_name_prefix}*`), EC2 SG + describe
+
+Conditional via inputs:
+
+| Input | Effect |
+|---|---|
+| `route53_zone_ids = [...]` | scopes `route53:ChangeResourceRecordSets` to the listed zones (otherwise falls back to `*`) |
+| `allow_secret_create = true` | adds Secrets Manager create/update/delete (scoped to `secret_name_prefix`) |
 
 ## Cross-account assume from your account
 
@@ -45,13 +56,14 @@ provider "aws" {
 
 | Name | Version |
 | ---- | ------- |
+| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.9 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
-| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.43.0 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.0 |
 
 ## Modules
 
@@ -77,7 +89,7 @@ No modules.
 | <a name="input_module_name_prefix"></a> [module\_name\_prefix](#input\_module\_name\_prefix) | The `var.name` value passed to the nextcloud-mcp-server module. Used to<br/>scope IAM/logs/secrets ARNs. Defaults match the module default; change<br/>only if the module is instantiated with a non-default name. | `string` | `"nextcloud-mcp-server"` | no |
 | <a name="input_role_name"></a> [role\_name](#input\_role\_name) | Name of the deployer IAM role. | `string` | `"nextcloud-mcp-deployer"` | no |
 | <a name="input_role_path"></a> [role\_path](#input\_role\_path) | IAM path for the deployer role and its policy. | `string` | `"/clients/"` | no |
-| <a name="input_route53_zone_ids"></a> [route53\_zone\_ids](#input\_route53\_zone\_ids) | Route53 hosted zone IDs the deployer is allowed to mutate. Only needed<br/>in the module's custom-domain mode. Leave empty (the default) for the<br/>CloudFront-default-cert path, which requires no DNS or ACM permissions. | `list(string)` | `[]` | no |
+| <a name="input_route53_zone_ids"></a> [route53\_zone\_ids](#input\_route53\_zone\_ids) | Route53 public hosted zone IDs the deployer is allowed to mutate. The<br/>server module always creates Route53 records (ALB alias + ACM DNS-01<br/>validation), so this should be set to the zone(s) the module's<br/>`zone_id` input points at. Leaving it empty falls back to `*` as a<br/>convenience but is not recommended in production — scope it. | `list(string)` | `[]` | no |
 | <a name="input_secret_name_prefix"></a> [secret\_name\_prefix](#input\_secret\_name\_prefix) | Secrets Manager name prefix the deployer can read (and optionally<br/>create, see `allow_secret_create`). The module accepts a secret ARN as<br/>input; this prefix scopes the deployer's access to secrets matching<br/>that name pattern. | `string` | `"nextcloud-mcp"` | no |
 | <a name="input_trusted_principal_arns"></a> [trusted\_principal\_arns](#input\_trusted\_principal\_arns) | Principal ARNs allowed to assume this role. For testing in your own<br/>account: the user/role you want to assume from. For client deployments:<br/>typically a single root-account ARN of the deploying party (e.g.<br/>"arn:aws:iam::<your-account-id>:root"), with MFA or external-id<br/>conditions added at the trust-policy level if required. | `list(string)` | n/a | yes |
 

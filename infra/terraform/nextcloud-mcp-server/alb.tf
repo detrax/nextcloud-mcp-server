@@ -46,6 +46,12 @@ resource "aws_vpc_security_group_egress_rule" "alb_all_v4" {
   ip_protocol       = "-1"
 }
 
+resource "aws_vpc_security_group_egress_rule" "alb_all_v6" {
+  security_group_id = aws_security_group.alb.id
+  cidr_ipv6         = "::/0"
+  ip_protocol       = "-1"
+}
+
 resource "aws_lb" "this" {
   name               = var.name
   load_balancer_type = "application"

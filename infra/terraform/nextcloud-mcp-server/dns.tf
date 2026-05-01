@@ -3,8 +3,11 @@ resource "random_pet" "subdomain" {
   separator = "-"
 
   # Stable across applies; regenerate only if we point at a different zone.
+  # `zone_name` is in the keeper too so a zone migration that keeps the same
+  # zone_id (rare but possible across providers) still triggers regeneration.
   keepers = {
-    zone_id = var.zone_id
+    zone_id   = var.zone_id
+    zone_name = var.zone_name
   }
 }
 

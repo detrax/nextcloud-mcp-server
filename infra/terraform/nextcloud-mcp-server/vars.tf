@@ -22,6 +22,11 @@ variable "private_subnet_ids" {
 variable "nextcloud_url" {
   description = "Public URL of the Nextcloud instance the MCP server pairs with (e.g., https://cloud.example.com). Used to advertise the OIDC discovery endpoint via /api/v1/status so the astrolabe Nextcloud app can discover Nextcloud's oidc_provider as the IdP instead of falling back to http://localhost."
   type        = string
+
+  validation {
+    condition     = startswith(var.nextcloud_url, "https://")
+    error_message = "nextcloud_url must include the https:// scheme; OIDC discovery is composed by appending /.well-known/openid-configuration."
+  }
 }
 
 variable "zone_id" {
@@ -117,8 +122,15 @@ variable "qdrant_collection" {
 }
 
 variable "qdrant_image_tag" {
-  description = "Qdrant container image tag (e.g., v1.15.0). Pin to a specific release; avoid :latest. Unused when use_external_qdrant = true."
+  description = "Qdrant container image tag (e.g., v1.15.0). Pin to a specific release; avoid :latest. Required only when use_external_qdrant = false; omit (or pass null) when use_external_qdrant = true."
   type        = string
+  nullable    = true
+  default     = null
+
+  validation {
+    condition     = var.use_external_qdrant || var.qdrant_image_tag != null
+    error_message = "qdrant_image_tag is required when use_external_qdrant = false."
+  }
 }
 
 variable "use_external_qdrant" {

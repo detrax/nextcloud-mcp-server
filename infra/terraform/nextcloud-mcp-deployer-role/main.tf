@@ -1,4 +1,5 @@
 terraform {
+  required_version = ">= 1.9"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -71,13 +72,29 @@ data "aws_iam_policy_document" "deployer" {
     resources = ["*"]
   }
 
-  # --- Edge: CloudFront ---
+  # --- Service Discovery / Cloud Map ---
   #
-  # CloudFront has no resource-ARN scoping for distribution create. Cache /
-  # origin-request policies the module ships are also account-wide objects.
+  # Module always creates `aws_service_discovery_private_dns_namespace` (in
+  # service_discovery.tf) and `aws_service_discovery_service` (in qdrant.tf).
+  # Cloud Map APIs don't accept resource-ARN scoping at create time; the
+  # blast radius is bounded by the SG/account boundary already.
   statement {
-    sid       = "CloudFrontService"
-    actions   = ["cloudfront:*"]
+    sid = "ServiceDiscoveryService"
+    actions = [
+      "servicediscovery:CreatePrivateDnsNamespace",
+      "servicediscovery:DeleteNamespace",
+      "servicediscovery:GetNamespace",
+      "servicediscovery:ListNamespaces",
+      "servicediscovery:GetOperation",
+      "servicediscovery:CreateService",
+      "servicediscovery:DeleteService",
+      "servicediscovery:GetService",
+      "servicediscovery:UpdateService",
+      "servicediscovery:ListServices",
+      "servicediscovery:TagResource",
+      "servicediscovery:UntagResource",
+      "servicediscovery:ListTagsForResource",
+    ]
     resources = ["*"]
   }
 
@@ -246,44 +263,74 @@ data "aws_iam_policy_document" "deployer" {
     resources = ["*"]
   }
 
-  # --- Route53 + ACM (custom-domain mode only) ---
+  # --- Route53 ---
   #
-  # Default mode (CloudFront with `*.cloudfront.net` cert) needs neither.
-  # Opt in by passing `route53_zone_ids` for the zones the deployer is
-  # allowed to mutate.
-  dynamic "statement" {
-    for_each = length(var.route53_zone_ids) > 0 ? [1] : []
-    content {
-      sid = "Route53RecordsForZones"
-      actions = [
-        "route53:ChangeResourceRecordSets",
-        "route53:ListResourceRecordSets",
-        "route53:GetHostedZone",
-      ]
-      resources = [
-        for zone_id in var.route53_zone_ids :
-        "arn:${local.partition}:route53:::hostedzone/${zone_id}"
-      ]
-    }
+  # The server module always creates ACM cert + Route53 records (alias to ALB
+  # and DNS-01 validation), so these statements are unconditional. Cloud Map's
+  # CreatePrivateDnsNamespace also creates a Route53 private hosted zone
+  # under the caller's identity, which needs the hosted-zone management
+  # actions below.
+
+  # Hosted-zone CRUD (private zones for Cloud Map, public-zone reads for the
+  # caller-supplied zone). ChangeResourceRecordSets is the destructive action
+  # and is split into a separate statement scoped to caller-supplied zones.
+  statement {
+    sid = "Route53HostedZoneManage"
+    actions = [
+      "route53:CreateHostedZone",
+      "route53:GetHostedZone",
+      "route53:DeleteHostedZone",
+      "route53:ListHostedZones",
+      "route53:ListHostedZonesByVPC",
+      "route53:AssociateVPCWithHostedZone",
+      "route53:DisassociateVPCFromHostedZone",
+      "route53:ChangeTagsForResource",
+      "route53:ListTagsForResource",
+      "route53:ListResourceRecordSets",
+    ]
+    resources = ["*"]
+  }
+
+  # ChangeResourceRecordSets is scoped to caller-supplied public zones when
+  # `route53_zone_ids` is set. Falls back to `*` only as a convenience for
+  # callers who haven't enumerated their zones — strongly recommend setting
+  # the variable.
+  statement {
+    sid     = "Route53RecordsForZones"
+    actions = ["route53:ChangeResourceRecordSets"]
+    resources = (
+      length(var.route53_zone_ids) > 0
+      ? [for zone_id in var.route53_zone_ids : "arn:${local.partition}:route53:::hostedzone/${zone_id}"]
+      : ["*"]
+    )
   }
 
   # GetChange takes a change-id, not a zone ARN — must be `*`.
-  dynamic "statement" {
-    for_each = length(var.route53_zone_ids) > 0 ? [1] : []
-    content {
-      sid       = "Route53GetChange"
-      actions   = ["route53:GetChange"]
-      resources = ["*"]
-    }
+  statement {
+    sid       = "Route53GetChange"
+    actions   = ["route53:GetChange"]
+    resources = ["*"]
   }
 
-  dynamic "statement" {
-    for_each = length(var.route53_zone_ids) > 0 ? [1] : []
-    content {
-      sid       = "AcmService"
-      actions   = ["acm:*"]
-      resources = ["*"]
-    }
+  # --- ACM ---
+  #
+  # The server module always issues an ACM cert. ACM cert ARNs are only
+  # known after RequestCertificate, so the destructive actions can't be
+  # scoped further at policy-write time. Restrict the action set instead of
+  # granting `acm:*`.
+  statement {
+    sid = "AcmManageCertificates"
+    actions = [
+      "acm:RequestCertificate",
+      "acm:DescribeCertificate",
+      "acm:DeleteCertificate",
+      "acm:ListCertificates",
+      "acm:ListTagsForCertificate",
+      "acm:AddTagsToCertificate",
+      "acm:RemoveTagsFromCertificate",
+      "acm:UpdateCertificateOptions",
+    ]
+    resources = ["*"]
   }
 
   # --- KMS describe (AWS-managed keys for default EFS / Secrets encryption) ---
