@@ -290,6 +290,31 @@ async def test_verify_news_items_transient_keeps_all(mocker):
 
 
 @pytest.mark.unit
+async def test_verify_news_items_unexpected_exception_keeps_all(mocker):
+    """A non-HTTP exception from get_items must keep all results (fail open).
+
+    Covers the catch-all ``except Exception`` branch that exists so a bug
+    in the News client (or an httpx connection error) cannot silently shrink
+    the result set.
+    """
+    news_client = SimpleNamespace(
+        get_items=mocker.AsyncMock(side_effect=RuntimeError("news client boom"))
+    )
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(1, doc_type="news_item"),
+            _make_result(2, doc_type="news_item"),
+        ],
+        _sem(),
+    )
+
+    assert result == {1, 2}
+
+
+@pytest.mark.unit
 async def test_verify_news_items_non_numeric_id_keeps_only_bad_item(mocker):
     """A non-numeric doc_id is fail-open per item, not per batch.
 
@@ -480,6 +505,28 @@ async def test_verify_files_transient_5xx_keeps(mocker):
     assert result == {7}
 
 
+@pytest.mark.unit
+async def test_verify_files_unexpected_exception_keeps(mocker):
+    """A non-HTTP exception from get_file_info must not drop the result.
+
+    The catch-all ``except Exception`` branch in the file verifier exists
+    so a bug in the WebDAV client (or an httpx ConnectError on a flaky
+    network) cannot silently shrink result pages.
+    """
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=RuntimeError("dav blew up"))
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="alice")
+
+    result = await _verify_files(
+        client,
+        [_make_result(8, doc_type="file", metadata={"path": "y.txt"})],
+        _sem(),
+    )
+
+    assert result == {8}
+
+
 # ---------------------------------------------------------------------------
 # Deck card verifier
 # ---------------------------------------------------------------------------
@@ -528,6 +575,132 @@ async def test_verify_deck_cards_403_drops(mocker):
     )
 
     assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_deck_cards_404_drops(mocker):
+    """Card deleted from the board → 404 from get_card → drop."""
+    deck_client = SimpleNamespace(
+        get_card=mocker.AsyncMock(side_effect=_http_error(404))
+    )
+    client = SimpleNamespace(deck=deck_client, username="alice")
+
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+
+    assert result == set()
+
+
+@pytest.mark.unit
+async def test_verify_deck_cards_transient_5xx_keeps(mocker):
+    """Transient 5xx from get_card must NOT silently shrink results."""
+    deck_client = SimpleNamespace(
+        get_card=mocker.AsyncMock(side_effect=_http_error(502))
+    )
+    client = SimpleNamespace(deck=deck_client, username="alice")
+
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+
+    assert result == {42}
+
+
+@pytest.mark.unit
+async def test_verify_deck_cards_unexpected_exception_keeps(mocker):
+    """Non-HTTP exception from get_card → fail-open, keep result."""
+    deck_client = SimpleNamespace(
+        get_card=mocker.AsyncMock(side_effect=RuntimeError("deck client boom"))
+    )
+    client = SimpleNamespace(deck=deck_client, username="alice")
+
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+
+    assert result == {42}
+
+
+@pytest.mark.unit
+async def test_verify_deck_cards_non_numeric_metadata_keeps(mocker):
+    """Non-numeric board_id/stack_id/card_id must fail open before the API call.
+
+    The hoisted ``int()`` casts in ``_verify_deck_cards`` produce a
+    type-specific log line; the catch-all path must never run.
+    """
+    deck_client = SimpleNamespace(
+        get_card=mocker.AsyncMock(side_effect=AssertionError("must not be called"))
+    )
+    client = SimpleNamespace(deck=deck_client, username="alice")
+
+    # Non-numeric board_id
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": "not-a-number", "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+    assert result == {42}
+
+    # Non-numeric stack_id
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                43,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": "bad"},
+            )
+        ],
+        _sem(),
+    )
+    assert result == {43}
+
+    # Non-numeric card_id (doc_id itself)
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                "card-uuid",
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
+    assert result == {"card-uuid"}
+
+    deck_client.get_card.assert_not_awaited()
 
 
 @pytest.mark.unit

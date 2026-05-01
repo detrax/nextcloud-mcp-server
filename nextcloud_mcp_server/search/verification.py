@@ -72,8 +72,9 @@ async def _verify_notes(
         doc_id = result.id
         # Parse defensively before the network call so a malformed payload
         # produces a specific log line, not a generic "unexpected error"
-        # from the catch-all ``except Exception`` below. The parallel
-        # implementation in ``_verify_deck_cards`` follows the same pattern.
+        # from the catch-all ``except Exception`` below. ``_verify_notes``
+        # is the canonical shape; ``_verify_deck_cards`` and
+        # ``_verify_news_items`` mirror this hoisted-cast pattern.
         try:
             note_id_int = int(doc_id)
         except (TypeError, ValueError) as e:
@@ -210,8 +211,8 @@ async def _verify_deck_cards(
 
         # Parse defensively before the network call so a malformed payload
         # produces a specific log line, not a generic "unexpected error"
-        # from the catch-all ``except Exception`` below. The parallel
-        # implementation in ``_verify_news_items`` follows the same pattern.
+        # from the catch-all ``except Exception`` below. Mirrors the
+        # canonical hoisted-cast pattern in ``_verify_notes``.
         try:
             board_id_int = int(board_id)
             stack_id_int = int(stack_id)

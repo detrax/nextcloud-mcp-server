@@ -9,7 +9,7 @@ import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import cast
 from urllib.parse import urlparse
 
 import anyio
@@ -316,10 +316,10 @@ class VectorSyncState:
     and FastMCP session lifespans (where MCP tools need access to the streams).
     """
 
-    document_send_stream: Optional[MemoryObjectSendStream] = None
-    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
-    shutdown_event: Optional[anyio.Event] = None
-    scanner_wake_event: Optional[anyio.Event] = None
+    document_send_stream: MemoryObjectSendStream | None = None
+    document_receive_stream: MemoryObjectReceiveStream | None = None
+    shutdown_event: anyio.Event | None = None
+    scanner_wake_event: anyio.Event | None = None
     # Long-lived task group used for fire-and-forget background work spawned
     # from the request path (e.g. ADR-019 verify-on-read eviction). Set by the
     # starlette lifespan after entering its task group; cleared on shutdown.
@@ -335,11 +335,11 @@ class AppContext:
     """Application context for BasicAuth mode."""
 
     client: NextcloudClient
-    storage: Optional["RefreshTokenStorage"] = None
-    document_send_stream: Optional[MemoryObjectSendStream] = None
-    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
-    shutdown_event: Optional[anyio.Event] = None
-    scanner_wake_event: Optional[anyio.Event] = None
+    storage: "RefreshTokenStorage | None" = None
+    document_send_stream: MemoryObjectSendStream | None = None
+    document_receive_stream: MemoryObjectReceiveStream | None = None
+    shutdown_event: anyio.Event | None = None
+    scanner_wake_event: anyio.Event | None = None
 
     @property
     def eviction_task_group(self) -> TaskGroup | None:
@@ -357,16 +357,14 @@ class OAuthAppContext:
 
     nextcloud_host: str
     token_verifier: object  # UnifiedTokenVerifier (ADR-005 compliant)
-    refresh_token_storage: Optional["RefreshTokenStorage"] = None
-    oauth_client: Optional[object] = None
+    refresh_token_storage: "RefreshTokenStorage | None" = None
+    oauth_client: object | None = None
     oauth_provider: str = "nextcloud"  # "nextcloud" or "keycloak"
-    server_client_id: Optional[str] = (
-        None  # MCP server's OAuth client ID (static or DCR)
-    )
-    document_send_stream: Optional[MemoryObjectSendStream] = None
-    document_receive_stream: Optional[MemoryObjectReceiveStream] = None
-    shutdown_event: Optional[anyio.Event] = None
-    scanner_wake_event: Optional[anyio.Event] = None
+    server_client_id: str | None = None  # MCP server's OAuth client ID (static or DCR)
+    document_send_stream: MemoryObjectSendStream | None = None
+    document_receive_stream: MemoryObjectReceiveStream | None = None
+    shutdown_event: anyio.Event | None = None
+    scanner_wake_event: anyio.Event | None = None
 
     @property
     def eviction_task_group(self) -> TaskGroup | None:
