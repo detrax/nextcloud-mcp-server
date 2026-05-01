@@ -80,16 +80,14 @@ class SemanticSearchResponse(BaseResponse):
     search_method: str = Field(
         default="semantic", description="Search method used (semantic or hybrid)"
     )
-    verified_count: int = Field(
+    verified_chunk_count: int = Field(
         default=0,
         description=(
             "Number of search result chunks that passed verify-on-read "
             "access checks (ADR-019). Equals len(verified_results) before "
-            "trimming to limit. Note: multiple chunks of the same document "
-            "are counted separately here, whereas dropped_count counts "
-            "unique (doc_id, doc_type) pairs — the asymmetry is intentional "
-            "(verified_count is sized in result rows, dropped_count is "
-            "sized in unique ghost documents)."
+            "trimming to limit. Sized in chunks (result rows), NOT in "
+            "unique documents — pair with dropped_count carefully: "
+            "dropped_count is sized in unique (doc_id, doc_type) pairs."
         ),
     )
     dropped_count: int = Field(

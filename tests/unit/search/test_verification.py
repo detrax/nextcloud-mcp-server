@@ -178,6 +178,29 @@ async def test_verify_notes_mixed_outcomes(mocker):
     assert result == {1, 3}
 
 
+@pytest.mark.unit
+async def test_verify_notes_string_doc_id_matches_production(mocker):
+    """Notes are stored with string doc_ids in production (scanner.py:241).
+
+    The verifier must parse the string to int for the API call but
+    preserve the original string in the accessible set so eviction
+    receives the same type that was indexed in Qdrant. Without this
+    contract, a `MatchValue(value=42)` eviction filter would not match
+    a payload stored as `"42"`.
+    """
+    notes_client = SimpleNamespace(
+        get_note=mocker.AsyncMock(return_value={"id": 42, "content": "x"})
+    )
+    client = SimpleNamespace(notes=notes_client, username="alice")
+
+    result = await _verify_notes(client, [_make_result("42", doc_type="note")], _sem())
+
+    # Original string id is preserved (not coerced to int 42).
+    assert result == {"42"}
+    # The API call still uses the int form internally.
+    notes_client.get_note.assert_awaited_once_with(42)
+
+
 # ---------------------------------------------------------------------------
 # News batch verifier
 # ---------------------------------------------------------------------------
@@ -267,15 +290,15 @@ async def test_verify_news_items_transient_keeps_all(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_news_items_non_numeric_id_keeps_all(mocker):
-    """One non-numeric doc_id triggers fail-open for the WHOLE result set.
+async def test_verify_news_items_non_numeric_id_keeps_only_bad_item(mocker):
+    """A non-numeric doc_id is fail-open per item, not per batch.
 
     The intersection logic in `_verify_news_items` tries `int(d)` for each
-    incoming doc_id; a single non-numeric value (e.g. ``"abc"``) raises
-    ValueError inside the intersection loop. The except block must catch it
-    and return the full input set (fail open) rather than dropping anything.
-    This is intentional v1 behaviour — surfacing one bad id should not
-    drop legitimate adjacent results.
+    incoming doc_id; a single non-numeric value (e.g. ``"abc"``) is now
+    caught per-item — only that one id is preserved unverified, while
+    valid numeric ids are still checked against the API response. Mirrors
+    the per-item shape of the notes/files/deck verifiers (one bad id does
+    not poison adjacent verifications).
     """
     news_client = SimpleNamespace(
         get_items=mocker.AsyncMock(return_value=[{"id": 10}, {"id": 20}])
@@ -289,8 +312,57 @@ async def test_verify_news_items_non_numeric_id_keeps_all(mocker):
         _sem(),
     )
 
-    # Fail-open: every requested id is preserved, INCLUDING the bad one.
+    # 10 and 20 are verified present; "abc" is unverifiable so kept fail-open.
     assert result == {10, 20, "abc"}
+
+
+@pytest.mark.unit
+async def test_verify_news_items_drops_missing_when_other_id_is_non_numeric(
+    mocker,
+):
+    """A non-numeric doc_id no longer rescues a definitively-missing id.
+
+    Regression for the per-item fail-open: previously a single non-numeric
+    doc_id triggered batch-wide fail-open, so a definitively-missing id
+    (20 below) escaped eviction. With per-item handling, only "abc" is
+    kept; 20 is correctly dropped.
+    """
+    news_client = SimpleNamespace(get_items=mocker.AsyncMock(return_value=[{"id": 10}]))
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    doc_ids: list[int | str] = [10, 20, "abc"]
+    result = await _verify_news_items(
+        client,
+        [_make_result(d, doc_type="news_item") for d in doc_ids],
+        _sem(),
+    )
+
+    # 10 verified present, 20 verified missing (dropped), "abc" unverifiable.
+    assert result == {10, "abc"}
+
+
+@pytest.mark.unit
+async def test_verify_news_items_malformed_api_response_keeps_all(mocker):
+    """A malformed API response (non-numeric server id) fails open per batch.
+
+    Distinct from a non-numeric *stored* doc_id: when the News API itself
+    returns garbage, we cannot build present_ids at all, so every requested
+    doc_id is preserved (transient — eviction will retry on next query).
+    """
+    news_client = SimpleNamespace(
+        get_items=mocker.AsyncMock(return_value=[{"id": "not-an-int"}, {"id": 20}])
+    )
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    doc_ids: list[int | str] = [10, 20]
+    result = await _verify_news_items(
+        client,
+        [_make_result(d, doc_type="news_item") for d in doc_ids],
+        _sem(),
+    )
+
+    # Batch fail-open: API broken, every requested id preserved.
+    assert result == {10, 20}
 
 
 # ---------------------------------------------------------------------------
@@ -531,25 +603,32 @@ async def test_verify_search_results_dedupes_chunks_per_document(mocker):
 
 @pytest.mark.unit
 async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
-    """Inline-fallback path (no eviction_task_group): evict completes before return."""
+    """Inline-fallback path (no eviction_task_group): evict completes before return.
+
+    Notes are stored with string doc_ids in production (scanner.py:241
+    ``doc_id = str(note["id"])``), so this test uses string ids end-to-end
+    to exercise the actual production type — ``SearchResult.id``,
+    ``_VERIFIERS["note"]`` return-set members, and
+    ``delete_document_points`` arguments all stay as ``str``.
+    """
     spy_evict = mocker.AsyncMock()
     mocker.patch.object(verification, "delete_document_points", spy_evict)
 
-    # Verifier reports note 1 accessible, note 99 not
-    note_verifier = mocker.AsyncMock(return_value={1})
+    # Verifier reports note "1" accessible, note "99" not
+    note_verifier = mocker.AsyncMock(return_value={"1"})
     mocker.patch.dict(verification._VERIFIERS, {"note": note_verifier}, clear=False)
 
     results = [
-        _make_result(1, doc_type="note"),
-        _make_result(99, doc_type="note"),
+        _make_result("1", doc_type="note"),
+        _make_result("99", doc_type="note"),
     ]
     client = SimpleNamespace(username="alice")
 
     kept, dropped_count = await verify_search_results(client, results)
 
-    assert [r.id for r in kept] == [1]
+    assert [r.id for r in kept] == ["1"]
     assert dropped_count == 1
-    spy_evict.assert_awaited_once_with(99, "note", "alice")
+    spy_evict.assert_awaited_once_with("99", "note", "alice")
 
 
 @pytest.mark.unit
@@ -596,6 +675,54 @@ async def test_verify_search_results_fire_and_forget_eviction(mocker):
 
     # After the task group exits, the eviction must have run.
     assert eviction_completed.is_set()
+
+
+@pytest.mark.unit
+async def test_verify_search_results_eviction_task_group_closed_is_ignored(
+    mocker,
+):
+    """A closed eviction task group must not surface as a search error.
+
+    Guards the race documented in `verification.py`: the lifespan task
+    group can exit between the ``getattr()`` capture in
+    ``server/semantic.py`` and the ``start_soon`` call here. Calling
+    ``start_soon`` on a closed group raises ``RuntimeError``; the
+    verifier must catch and log it (eviction is best-effort, the next
+    query re-verifies). Without this guard the search response would
+    fail.
+    """
+    spy_evict = mocker.AsyncMock()
+    mocker.patch.object(verification, "delete_document_points", spy_evict)
+
+    note_verifier = mocker.AsyncMock(return_value=set())  # 99 inaccessible
+    mocker.patch.dict(verification._VERIFIERS, {"note": note_verifier}, clear=False)
+
+    class ClosedTaskGroup:
+        """Stand-in for an exited anyio.TaskGroup."""
+
+        def __init__(self):
+            self.start_soon_calls = 0
+
+        def start_soon(self, *_args, **_kwargs):
+            self.start_soon_calls += 1
+            raise RuntimeError("This task group is not active")
+
+    closed_tg = ClosedTaskGroup()
+
+    results = [_make_result(99, doc_type="note")]
+    client = SimpleNamespace(username="alice")
+
+    # Must NOT raise even though start_soon raises RuntimeError.
+    kept, dropped_count = await verify_search_results(
+        client, results, eviction_task_group=closed_tg
+    )
+
+    assert kept == []
+    assert dropped_count == 1
+    assert closed_tg.start_soon_calls == 1
+    # Inline fallback must NOT run when a (closed) task group was provided —
+    # the guard is fire-and-forget, eviction is dropped on the floor.
+    spy_evict.assert_not_awaited()
 
 
 @pytest.mark.unit

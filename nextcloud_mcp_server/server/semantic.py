@@ -94,8 +94,13 @@ def configure_semantic_tools(mcp: FastMCP):
         username = client.username
 
         logger.info(
-            f"BM25 hybrid search: query='{query}', user={username}, "
-            f"limit={limit}, score_threshold={score_threshold}, fusion={fusion}"
+            "BM25 hybrid search: query=%r, user=%s, "
+            "limit=%d, score_threshold=%s, fusion=%s",
+            query,
+            username,
+            limit,
+            score_threshold,
+            fusion,
         )
 
         # Check that vector sync is enabled
@@ -130,6 +135,9 @@ def configure_semantic_tools(mcp: FastMCP):
                 # The 2× factor is a deliberate v1 trade-off — raising it
                 # costs Nextcloud round-trips on every search. Trim to
                 # ``limit`` happens AFTER verification.
+                # TODO(ADR-019): expose VERIFICATION_OVERFETCH so operators
+                # with persistent high ghost density can tune this without a
+                # code change.
                 unverified_results = await search_algo.search(
                     query=query,
                     user_id=username,
@@ -177,7 +185,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 all_results,
                 eviction_task_group=eviction_task_group,
             )
-            verified_count = len(verified_results)
+            verified_chunk_count = len(verified_results)
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
@@ -227,8 +235,9 @@ def configure_semantic_tools(mcp: FastMCP):
             # Expand results with surrounding context if requested
             if include_context and results:
                 logger.info(
-                    f"Expanding {len(results)} results with context "
-                    f"(context_chars={context_chars})"
+                    "Expanding %d results with context (context_chars=%d)",
+                    len(results),
+                    context_chars,
                 )
 
                 # Fetch context for all results in parallel
@@ -286,20 +295,27 @@ def configure_semantic_tools(mcp: FastMCP):
                                     has_after_truncation=chunk_context.has_after_truncation,
                                 )
                                 logger.debug(
-                                    f"Expanded context for {result.doc_type} {result.id}"
+                                    "Expanded context for %s %s",
+                                    result.doc_type,
+                                    result.id,
                                 )
                             else:
                                 # Context expansion failed, keep original result
                                 expanded_results[index] = result
                                 logger.debug(
-                                    f"Failed to expand context for {result.doc_type} {result.id}, "
-                                    "keeping original result"
+                                    "Failed to expand context for %s %s, "
+                                    "keeping original result",
+                                    result.doc_type,
+                                    result.id,
                                 )
                         except Exception as e:
                             # Context expansion failed, keep original result
                             expanded_results[index] = result
                             logger.warning(
-                                f"Error expanding context for {result.doc_type} {result.id}: {e}"
+                                "Error expanding context for %s %s: %s",
+                                result.doc_type,
+                                result.id,
+                                e,
                             )
 
                 # Run all context fetches in parallel using anyio task group
@@ -310,17 +326,18 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Replace results with expanded versions
                 results = [r for r in expanded_results if r is not None]
                 logger.info(
-                    f"Context expansion completed: {len(results)} results with context"
+                    "Context expansion completed: %d results with context",
+                    len(results),
                 )
 
-            logger.info(f"Returning {len(results)} results from BM25 hybrid search")
+            logger.info("Returning %d results from BM25 hybrid search", len(results))
 
             return SemanticSearchResponse(
                 results=results,
                 query=query,
                 total_found=len(results),
                 search_method=f"bm25_hybrid_{fusion}",
-                verified_count=verified_count,
+                verified_chunk_count=verified_chunk_count,
                 dropped_count=dropped_count,
             )
 
@@ -341,7 +358,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 ErrorData(code=-1, message=f"Network error during search: {str(e)}")
             )
         except Exception as e:
-            logger.error(f"Search error: {e}", exc_info=True)
+            logger.error("Search error: %s", e, exc_info=True)
             raise McpError(ErrorData(code=-1, message=f"Search failed: {str(e)}"))
 
     @mcp.tool(
@@ -422,7 +439,7 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # 2. Handle no results case - don't waste a sampling call
         if not search_response.results:
-            logger.debug(f"No documents found for query: {query}")
+            logger.debug("No documents found for query: %r", query)
             return SamplingSearchResponse(
                 query=query,
                 generated_answer="No relevant documents found in your Nextcloud content for this query.",
@@ -439,22 +456,25 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # Log capability check result for debugging
         logger.info(
-            f"Sampling capability check: client_has_sampling={client_has_sampling}, "
-            f"query='{query}'"
+            "Sampling capability check: client_has_sampling=%s, query=%r",
+            client_has_sampling,
+            query,
         )
         if hasattr(ctx.session, "_client_params") and ctx.session._client_params:
             client_caps = ctx.session._client_params.capabilities
             logger.debug(
-                f"Client advertised capabilities: "
-                f"roots={client_caps.roots is not None}, "
-                f"sampling={client_caps.sampling is not None}, "
-                f"experimental={client_caps.experimental is not None}"
+                "Client advertised capabilities: "
+                "roots=%s, sampling=%s, experimental=%s",
+                client_caps.roots is not None,
+                client_caps.sampling is not None,
+                client_caps.experimental is not None,
             )
 
         if not client_has_sampling:
             logger.info(
-                f"Client does not support sampling (query: '{query}'), "
-                f"returning {len(search_response.results)} documents"
+                "Client does not support sampling (query: %r), returning %d documents",
+                query,
+                len(search_response.results),
             )
             return SamplingSearchResponse(
                 query=query,
@@ -493,8 +513,9 @@ def configure_semantic_tools(mcp: FastMCP):
                         accessible_results[index] = result
                         full_contents[index] = content
                         logger.debug(
-                            f"Fetched full content for note {result.id} "
-                            f"(length: {len(content)} chars)"
+                            "Fetched full content for note %s (length: %d chars)",
+                            result.id,
+                            len(content),
                         )
                     except Exception as e:
                         # Race window after verify_search_results — drop result.
@@ -524,7 +545,9 @@ def configure_semantic_tools(mcp: FastMCP):
 
         # Check if we filtered out all results
         if not accessible_results:
-            logger.warning(f"All search results became inaccessible for query: {query}")
+            logger.warning(
+                "All search results became inaccessible for query: %r", query
+            )
             return SamplingSearchResponse(
                 query=query,
                 generated_answer="All matching documents are no longer accessible.",
@@ -566,9 +589,12 @@ def configure_semantic_tools(mcp: FastMCP):
         )
 
         logger.info(
-            f"Initiating sampling request: query_length={len(query)}, "
-            f"documents={len(search_response.results)}, "
-            f"prompt_length={len(prompt)}, max_tokens={max_answer_tokens}"
+            "Initiating sampling request: query_length=%d, documents=%d, "
+            "prompt_length=%d, max_tokens=%d",
+            len(query),
+            len(search_response.results),
+            len(prompt),
+            max_answer_tokens,
         )
 
         # 6. Request LLM completion via MCP sampling with timeout
@@ -601,13 +627,15 @@ def configure_semantic_tools(mcp: FastMCP):
                 # Handle non-text responses (shouldn't happen for text prompts)
                 generated_answer = f"Received non-text response of type: {sampling_result.content.type}"
                 logger.warning(
-                    f"Unexpected content type from sampling: {sampling_result.content.type}"
+                    "Unexpected content type from sampling: %s",
+                    sampling_result.content.type,
                 )
 
             logger.info(
-                f"Sampling successful: model={sampling_result.model}, "
-                f"stop_reason={sampling_result.stopReason}, "
-                f"answer_length={len(generated_answer)}"
+                "Sampling successful: model=%s, stop_reason=%s, answer_length=%d",
+                sampling_result.model,
+                sampling_result.stopReason,
+                len(generated_answer),
             )
 
             return SamplingSearchResponse(
@@ -623,8 +651,10 @@ def configure_semantic_tools(mcp: FastMCP):
 
         except TimeoutError:
             logger.warning(
-                f"Sampling request timed out after {sampling_timeout_seconds} seconds for query: '{query}', "
-                f"returning search results only"
+                "Sampling request timed out after %d seconds for query: %r, "
+                "returning search results only",
+                sampling_timeout_seconds,
+                query,
             )
             return SamplingSearchResponse(
                 query=query,
@@ -646,18 +676,20 @@ def configure_semantic_tools(mcp: FastMCP):
 
             if "rejected" in error_msg.lower() or "denied" in error_msg.lower():
                 # User explicitly declined - this is normal, not an error
-                logger.info(f"User declined sampling request for query: '{query}'")
+                logger.info("User declined sampling request for query: %r", query)
                 search_method = "semantic_sampling_user_declined"
                 user_message = "User declined to generate an answer"
             elif "not supported" in error_msg.lower():
                 # Client doesn't support sampling - also normal
-                logger.info(f"Sampling not supported by client for query: '{query}'")
+                logger.info("Sampling not supported by client for query: %r", query)
                 search_method = "semantic_sampling_unsupported"
                 user_message = "Sampling not supported by this client"
             else:
                 # Other MCP protocol errors
                 logger.warning(
-                    f"MCP error during sampling for query '{query}': {error_msg}"
+                    "MCP error during sampling for query %r: %s",
+                    query,
+                    error_msg,
                 )
                 search_method = "semantic_sampling_mcp_error"
                 user_message = f"Sampling unavailable: {error_msg}"
@@ -678,8 +710,10 @@ def configure_semantic_tools(mcp: FastMCP):
         except Exception as e:
             # Truly unexpected errors - these SHOULD have tracebacks
             logger.error(
-                f"Unexpected error during sampling for query '{query}': "
-                f"{type(e).__name__}: {e}",
+                "Unexpected error during sampling for query %r: %s: %s",
+                query,
+                type(e).__name__,
+                e,
                 exc_info=True,
             )
 
@@ -763,7 +797,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 indexed_count = count_result.count
 
             except Exception as e:
-                logger.warning(f"Failed to query Qdrant for indexed count: {e}")
+                logger.warning("Failed to query Qdrant for indexed count: %s", e)
                 # Continue with indexed_count = 0
 
             # Determine status
@@ -777,7 +811,7 @@ def configure_semantic_tools(mcp: FastMCP):
             )
 
         except Exception as e:
-            logger.error(f"Error getting vector sync status: {e}")
+            logger.error("Error getting vector sync status: %s", e)
             raise McpError(
                 ErrorData(
                     code=-1,

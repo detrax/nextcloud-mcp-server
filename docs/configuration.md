@@ -513,9 +513,11 @@ aware of:
   (fail open) so a flaky link does not silently shrink result pages; only
   *definitive* 404 / 403 drops them.
 
-If verification ever needs to be disabled (debugging, benchmarking), the
-`evict_on_missing=False` flag on `verify_search_results()` skips eviction
-without changing what is returned to the caller.
+If eviction ever needs to be disabled (debugging, benchmarking), the
+`evict_on_missing=False` keyword argument on `verify_search_results()` skips
+the Qdrant deletes without changing what is returned to the caller. **This
+is a developer/test flag, not an operator knob — it has no env-var
+equivalent.** Operators who need a runtime toggle should open an issue.
 
 ### Environment Variables Reference
 

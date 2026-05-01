@@ -1301,6 +1301,15 @@ class WebDAVClient(BaseNextcloudClient):
     async def get_file_info(self, path: str) -> dict[str, Any] | None:
         """Get file info including file ID via WebDAV PROPFIND.
 
+        .. note::
+            **Behavior change (ADR-019):** previously this method returned
+            ``None`` for HTTP 404. It now raises ``HTTPStatusError`` for any
+            non-2xx status, including 404. ``None`` is reserved for the
+            ambiguous *malformed PROPFIND* case (server returned 2xx with a
+            response body missing required XML elements). External callers
+            updating from the old contract must catch ``HTTPStatusError``
+            and inspect ``e.response.status_code`` to handle 404 explicitly.
+
         Args:
             path: Path to the file (relative to user's files directory)
 

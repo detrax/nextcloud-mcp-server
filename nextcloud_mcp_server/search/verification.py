@@ -323,27 +323,33 @@ async def _verify_news_items(
             )
             return set(doc_ids)
 
-    # Cast safely: a non-numeric id from the API or in our doc_ids would
-    # otherwise raise ValueError after the semaphore block exits and surface
-    # as a verifier crash. Treat as transient (fail open) instead.
+    # Build present_ids from the API response. If the API itself returns
+    # malformed (non-numeric) ids, the whole batch becomes unverifiable —
+    # fail open for every requested doc_id (transient).
     try:
         present_ids = {
             int(item.get("id")) for item in items if item.get("id") is not None
         }
-        # Map back to the original doc_id types (caller may pass ints or strs).
-        accessible: set[int | str] = set()
-        for d in doc_ids:
-            if int(d) in present_ids:
-                accessible.add(d)
-        return accessible
     except (TypeError, ValueError) as e:
         logger.warning(
-            "Non-numeric id while verifying news items (sample=%r, doc_ids=%r): %s; keeping all results",
+            "Non-numeric id in news API response (sample=%r): %s; keeping all results",
             items[:3] if items else items,
-            doc_ids,
             e,
         )
         return set(doc_ids)
+
+    # Per-item check: a single non-numeric *stored* doc_id is fail-open
+    # for THAT item only — not the whole batch. Mirrors the per-item
+    # shape of the notes/files/deck verifiers.
+    accessible: set[int | str] = set()
+    for d in doc_ids:
+        try:
+            if int(d) in present_ids:
+                accessible.add(d)
+        except (TypeError, ValueError):
+            logger.debug("Non-numeric news doc_id %r; keeping (cannot verify)", d)
+            accessible.add(d)
+    return accessible
 
 
 _VERIFIERS: dict[str, BatchVerifier] = {
