@@ -462,7 +462,15 @@ async def verify_search_results(
 
         if eviction_task_group is not None:
             for doc_id, doc_type in inaccessible:
-                eviction_task_group.start_soon(evict, doc_id, doc_type)
+                # Guard against the lifespan task group having exited between
+                # the getattr() capture in server/semantic.py and this call —
+                # start_soon raises RuntimeError on a closed group, which
+                # would otherwise surface as a search error. Eviction is
+                # best-effort: the next query re-verifies and re-attempts.
+                try:
+                    eviction_task_group.start_soon(evict, doc_id, doc_type)
+                except Exception:
+                    logger.debug("Eviction task group closed; will retry on next query")
         else:
             async with anyio.create_task_group() as tg:
                 for doc_id, doc_type in inaccessible:

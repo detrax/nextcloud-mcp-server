@@ -1,7 +1,5 @@
 """Pydantic models for semantic search responses."""
 
-from typing import List, Optional
-
 from pydantic import BaseModel, Field
 
 from .base import BaseResponse
@@ -37,36 +35,36 @@ class SemanticSearchResult(BaseModel):
     )
     chunk_index: int = Field(description="Index of matching chunk in document")
     total_chunks: int = Field(description="Total number of chunks in document")
-    chunk_start_offset: Optional[int] = Field(
+    chunk_start_offset: int | None = Field(
         default=None, description="Character position where chunk starts in document"
     )
-    chunk_end_offset: Optional[int] = Field(
+    chunk_end_offset: int | None = Field(
         default=None, description="Character position where chunk ends in document"
     )
-    page_number: Optional[int] = Field(
+    page_number: int | None = Field(
         default=None, description="Page number for PDF documents"
     )
-    page_count: Optional[int] = Field(
+    page_count: int | None = Field(
         default=None, description="Total number of pages in PDF document"
     )
     # Context expansion fields (optional, populated when include_context=True)
     has_context_expansion: bool = Field(
         default=False, description="Whether context expansion was performed"
     )
-    marked_text: Optional[str] = Field(
+    marked_text: str | None = Field(
         default=None,
         description="Full text with position markers around matched chunk",
     )
-    before_context: Optional[str] = Field(
+    before_context: str | None = Field(
         default=None, description="Text before the matched chunk"
     )
-    after_context: Optional[str] = Field(
+    after_context: str | None = Field(
         default=None, description="Text after the matched chunk"
     )
-    has_before_truncation: Optional[bool] = Field(
+    has_before_truncation: bool | None = Field(
         default=None, description="Whether before_context was truncated"
     )
-    has_after_truncation: Optional[bool] = Field(
+    has_after_truncation: bool | None = Field(
         default=None, description="Whether after_context was truncated"
     )
 
@@ -74,7 +72,7 @@ class SemanticSearchResult(BaseModel):
 class SemanticSearchResponse(BaseResponse):
     """Response model for semantic search across all indexed Nextcloud apps."""
 
-    results: List[SemanticSearchResult] = Field(
+    results: list[SemanticSearchResult] = Field(
         description="Semantic search results with similarity scores"
     )
     query: str = Field(description="The search query used")
@@ -106,7 +104,7 @@ class SamplingSearchResponse(BaseResponse):
     generated_answer: str = Field(
         ..., description="LLM-generated answer based on retrieved documents"
     )
-    sources: List[SemanticSearchResult] = Field(
+    sources: list[SemanticSearchResult] = Field(
         default_factory=list,
         description="Source documents with excerpts and relevance scores",
     )
@@ -114,10 +112,10 @@ class SamplingSearchResponse(BaseResponse):
     search_method: str = Field(
         default="semantic_sampling", description="Search method used"
     )
-    model_used: Optional[str] = Field(
+    model_used: str | None = Field(
         default=None, description="Model that generated the answer"
     )
-    stop_reason: Optional[str] = Field(
+    stop_reason: str | None = Field(
         default=None, description="Reason generation stopped"
     )
 

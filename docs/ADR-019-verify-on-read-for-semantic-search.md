@@ -49,7 +49,7 @@ The vector pipeline (`vector/scanner.py`, `vector/processor.py`) currently index
 | doc_type | Cheapest authoritative check | Notes |
 |---|---|---|
 | `note` | `notes.get_note(id)` — single REST call, 404 on deletion | Per-user store; access is binary (yours or not). |
-| `news_item` | `news.get_item(id)` — single REST call | Per-user feeds; clean 404 semantics. |
+| `news_item` | `get_items(batch_size=-1)` once per search + intersect | No per-item REST endpoint (`get_item()` is itself a fetch-all + filter); batching once is cheaper than N fetch-all-and-filter calls. |
 | `file` | WebDAV `PROPFIND` with `Depth: 0` on `file_path` (already stored in Qdrant payload, see `server/semantic.py:161`) | `read_file()` works but downloads the body — too heavy for a verification check. PROPFIND is the WebDAV equivalent of HEAD. Catches both deletes and unshares. |
 | `deck_card` | `deck.get_card(board_id, stack_id, card_id)` using metadata cached in Qdrant (`search/context.py::_get_deck_metadata_from_qdrant`) | Fallback iteration through all boards/stacks (used by context expansion) is O(boards × stacks) and far too expensive to run on every query. |
 
