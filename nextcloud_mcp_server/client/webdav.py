@@ -483,13 +483,6 @@ class WebDAVClient(BaseNextcloudClient):
                     "status_code": 409,
                     "message": "Parent directory of destination doesn't exist",
                 }
-                logger.debug(
-                    f"Parent directory of destination '{destination_path}' doesn't exist"
-                )
-                return {
-                    "status_code": 409,
-                    "message": "Parent directory of destination doesn't exist",
-                }
             else:
                 logger.error(
                     f"HTTP error moving resource from '{source_path}' to '{destination_path}': {e}"

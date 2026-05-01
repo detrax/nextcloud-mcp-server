@@ -32,7 +32,6 @@ Failure policy:
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 import anyio
 from anyio.abc import TaskGroup
@@ -77,10 +76,7 @@ async def _verify_notes(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[int | str]:
-    # Mutated by inner check() tasks under the task group below. Safe
-    # without a lock: anyio is cooperative, .add() is not an await
-    # point, so two tasks cannot race on the same write. Same rationale
-    # as accessible_by_type in verify_search_results.
+    # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -135,10 +131,7 @@ async def _verify_files(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[int | str]:
-    # Mutated by inner check() tasks under the task group below. Safe
-    # without a lock: anyio is cooperative, .add() is not an await
-    # point, so two tasks cannot race on the same write. Same rationale
-    # as accessible_by_type in verify_search_results.
+    # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -209,10 +202,7 @@ async def _verify_deck_cards(
     results: list[SearchResult],
     semaphore: anyio.Semaphore,
 ) -> set[int | str]:
-    # Mutated by inner check() tasks under the task group below. Safe
-    # without a lock: anyio is cooperative, .add() is not an await
-    # point, so two tasks cannot race on the same write. Same rationale
-    # as accessible_by_type in verify_search_results.
+    # safe: cooperative concurrency, no lock needed (see verify_search_results)
     accessible: set[int | str] = set()
 
     async def check(result: SearchResult) -> None:
@@ -334,7 +324,13 @@ async def _verify_news_items(
             # fetching every item the user has access to. See the news caveat
             # in docs/configuration.md (Verify-on-Read) for the latency
             # tradeoff and follow-up paths.
+            news_fetch_start = anyio.current_time()
             items = await client.news.get_items(batch_size=-1, get_read=True)
+            logger.debug(
+                "News fetch for verification took %.2fs (%d item(s) returned)",
+                anyio.current_time() - news_fetch_start,
+                len(items),
+            )
         except HTTPStatusError as e:
             # If the News API itself is gone (app disabled, user lost access),
             # treat *all* requested items as inaccessible. Eviction will reclaim.
@@ -411,7 +407,7 @@ def get_supported_doc_types() -> set[str]:
 
 
 async def verify_search_results(
-    client: Any,
+    client: NextcloudClientProtocol,
     results: list[SearchResult],
     *,
     evict_on_missing: bool = True,

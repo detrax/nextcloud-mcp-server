@@ -86,18 +86,18 @@ class SemanticSearchResponse(BaseResponse):
             "Number of search result chunks that passed verify-on-read "
             "access checks (ADR-019). Equals len(verified_results) before "
             "trimming to limit. Sized in chunks (result rows), NOT in "
-            "unique documents — pair with dropped_count carefully: "
-            "dropped_count is sized in unique (doc_id, doc_type) pairs."
+            "unique documents — see dropped_document_count for the "
+            "per-document counterpart."
         ),
     )
-    dropped_count: int = Field(
+    dropped_document_count: int = Field(
         default=0,
         description=(
             "Number of unique (doc_id, doc_type) pairs dropped as ghost "
             "records during verify-on-read (ADR-019). A short result page "
-            "(len(results) < limit) combined with a non-zero dropped_count "
-            "indicates ghost density rather than scarcity of relevant "
-            "content."
+            "(len(results) < limit) combined with a non-zero "
+            "dropped_document_count indicates ghost density rather than "
+            "scarcity of relevant content."
         ),
     )
 

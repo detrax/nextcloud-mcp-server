@@ -94,9 +94,9 @@ def configure_semantic_tools(mcp: FastMCP):
               (sized in chunks; counted before trimming to ``limit``, so it
               can exceed ``len(results)`` when a doc has multiple matching
               chunks).
-            - dropped_count: unique ``(doc_id, doc_type)`` pairs evicted as
-              ghost records during this search (sized in documents, not
-              chunks).
+            - dropped_document_count: unique ``(doc_id, doc_type)`` pairs
+              evicted as ghost records during this search (sized in
+              documents, not chunks).
         """
         settings = get_settings()
         client = await get_client(ctx)
@@ -197,12 +197,19 @@ def configure_semantic_tools(mcp: FastMCP):
             eviction_task_group = (
                 ctx.request_context.lifespan_context.eviction_task_group
             )
+            verification_start = anyio.current_time()
             verified_results, dropped_count = await verify_search_results(
                 client,
                 all_results,
                 eviction_task_group=eviction_task_group,
             )
             verified_chunk_count = len(verified_results)
+            logger.debug(
+                "Verification completed in %.2fs: kept %d chunk(s), dropped %d doc(s)",
+                anyio.current_time() - verification_start,
+                verified_chunk_count,
+                dropped_count,
+            )
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
@@ -362,7 +369,7 @@ def configure_semantic_tools(mcp: FastMCP):
                 total_found=len(results),
                 search_method=f"bm25_hybrid_{fusion}",
                 verified_chunk_count=verified_chunk_count,
-                dropped_count=dropped_count,
+                dropped_document_count=dropped_count,
             )
 
         except ValueError as e:
