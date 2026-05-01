@@ -6,10 +6,18 @@ against Nextcloud at query time, dropping any that the user can no longer
 access (deleted, unshared, etc.) and lazily evicting them from the index.
 
 Per-doc_type verifiers are registered in ``_VERIFIERS``. Each takes the
-authenticated client, a list of doc_ids, and the user_id, and returns the
-subset of doc_ids that are currently accessible. The dispatch deliberately
-groups by doc_type so doc-types with cheap batch endpoints (news_item) can
-do a single fetch rather than one round-trip per result.
+authenticated client, the (deduplicated) list of ``SearchResult``s for that
+doc_type, and a shared concurrency semaphore. They return the subset of
+``doc_id`` values that are currently accessible. Verifiers read whatever
+metadata they need (file path, deck card board/stack ids) directly from the
+SearchResult — these fields are populated at index-time and propagated by
+the algorithm layer (see ``search/bm25_hybrid.py`` and ``search/semantic.py``)
+so verification adds zero extra Qdrant round-trips.
+
+Concurrency is bounded by a shared semaphore (default 20) so a large search
+result page (or a multi-doc_type query) cannot exhaust the httpx connection
+pool or trigger Nextcloud rate limiting. The 20-slot default matches the
+context-expansion convention in ``server/semantic.py``.
 
 Failure policy:
 
@@ -28,18 +36,22 @@ from typing import Any
 
 import anyio
 from httpx import HTTPStatusError
-from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search.algorithms import SearchResult
 from nextcloud_mcp_server.vector.eviction import delete_document_points
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
 
 
-BatchVerifier = Callable[[Any, list[int | str], str], Awaitable[set[int | str]]]
-"""(client, doc_ids, user_id) -> set of accessible doc_ids."""
+# Default cap on concurrent verification round-trips against Nextcloud. Matches
+# the convention in ``server/semantic.py`` for context-expansion fan-out.
+DEFAULT_VERIFICATION_CONCURRENCY = 20
+
+
+BatchVerifier = Callable[
+    [Any, list[SearchResult], anyio.Semaphore], Awaitable[set[int | str]]
+]
+"""(client, results, semaphore) -> set of doc_ids accessible to the user."""
 
 
 # ---------------------------------------------------------------------------
@@ -55,185 +67,200 @@ def _is_definitive_404_or_403(exc: BaseException) -> bool:
 
 
 async def _verify_notes(
-    client: Any, doc_ids: list[int | str], user_id: str
+    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
 ) -> set[int | str]:
     accessible: set[int | str] = set()
 
-    async def check(doc_id: int | str) -> None:
-        try:
-            await client.notes.get_note(int(doc_id))
-            accessible.add(doc_id)
-        except HTTPStatusError as e:
-            if _is_definitive_404_or_403(e):
-                return
-            logger.warning(
-                "Transient error verifying note %s: %s %s; keeping result",
-                doc_id,
-                e.response.status_code,
-                e,
-            )
-            accessible.add(doc_id)
-        except Exception as e:
-            logger.warning(
-                "Unexpected error verifying note %s: %s; keeping result",
-                doc_id,
-                e,
-            )
-            accessible.add(doc_id)
+    async def check(result: SearchResult) -> None:
+        async with semaphore:
+            doc_id = result.id
+            try:
+                await client.notes.get_note(int(doc_id))
+                accessible.add(doc_id)
+            except HTTPStatusError as e:
+                if _is_definitive_404_or_403(e):
+                    return
+                logger.warning(
+                    "Transient error verifying note %s: %s %s; keeping result",
+                    doc_id,
+                    e.response.status_code,
+                    e,
+                )
+                accessible.add(doc_id)
+            except Exception as e:
+                logger.warning(
+                    "Unexpected error verifying note %s: %s; keeping result",
+                    doc_id,
+                    e,
+                )
+                accessible.add(doc_id)
 
     async with anyio.create_task_group() as tg:
-        for doc_id in doc_ids:
-            tg.start_soon(check, doc_id)
+        for r in results:
+            tg.start_soon(check, r)
 
     return accessible
 
 
 async def _verify_files(
-    client: Any, doc_ids: list[int | str], user_id: str
+    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
 ) -> set[int | str]:
     accessible: set[int | str] = set()
 
-    async def check(doc_id: int | str) -> None:
-        # Resolve file_id → file_path from Qdrant payload
-        file_path = await _resolve_file_path(user_id, doc_id)
-        if file_path is None:
+    async def check(result: SearchResult) -> None:
+        doc_id = result.id
+        # file_path is propagated from the Qdrant payload by the algorithm
+        # layer (bm25_hybrid.py / semantic.py). No extra Qdrant round-trip.
+        file_path = (result.metadata or {}).get("path")
+        if not file_path:
             # Cannot verify without a path; treat as accessible to avoid
             # silently dropping legitimate results when payload is missing
+            # (legacy data, or a future doc_type that doesn't propagate path).
             logger.warning(
-                "No file_path in Qdrant for file_id %s; keeping result "
+                "No file path in metadata for file_id %s; keeping result "
                 "(verification skipped)",
                 doc_id,
             )
             accessible.add(doc_id)
             return
 
-        try:
-            info = await client.webdav.get_file_info(file_path)
-            if info is None:
-                # get_file_info returns None on definitive 404
-                return
-            accessible.add(doc_id)
-        except HTTPStatusError as e:
-            if _is_definitive_404_or_403(e):
-                return
-            logger.warning(
-                "Transient error verifying file %s (%s): %s %s; keeping result",
-                doc_id,
-                file_path,
-                e.response.status_code,
-                e,
-            )
-            accessible.add(doc_id)
-        except Exception as e:
-            logger.warning(
-                "Unexpected error verifying file %s (%s): %s; keeping result",
-                doc_id,
-                file_path,
-                e,
-            )
-            accessible.add(doc_id)
+        async with semaphore:
+            try:
+                info = await client.webdav.get_file_info(file_path)
+                if info is None:
+                    # get_file_info returns None on definitive 404
+                    return
+                accessible.add(doc_id)
+            except HTTPStatusError as e:
+                if _is_definitive_404_or_403(e):
+                    return
+                logger.warning(
+                    "Transient error verifying file %s (%s): %s %s; keeping result",
+                    doc_id,
+                    file_path,
+                    e.response.status_code,
+                    e,
+                )
+                accessible.add(doc_id)
+            except Exception as e:
+                logger.warning(
+                    "Unexpected error verifying file %s (%s): %s; keeping result",
+                    doc_id,
+                    file_path,
+                    e,
+                )
+                accessible.add(doc_id)
 
     async with anyio.create_task_group() as tg:
-        for doc_id in doc_ids:
-            tg.start_soon(check, doc_id)
+        for r in results:
+            tg.start_soon(check, r)
 
     return accessible
 
 
 async def _verify_deck_cards(
-    client: Any, doc_ids: list[int | str], user_id: str
+    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
 ) -> set[int | str]:
     accessible: set[int | str] = set()
 
-    async def check(doc_id: int | str) -> None:
-        # Resolve card_id → (board_id, stack_id) from Qdrant payload
-        meta = await _resolve_deck_metadata(user_id, int(doc_id))
-        if meta is None:
+    async def check(result: SearchResult) -> None:
+        doc_id = result.id
+        # board_id and stack_id are propagated from the Qdrant payload by the
+        # algorithm layer. No extra Qdrant round-trip.
+        meta = result.metadata or {}
+        board_id = meta.get("board_id")
+        stack_id = meta.get("stack_id")
+        if board_id is None or stack_id is None:
             # Without metadata we cannot run the cheap fast-path. Per ADR-019
             # we deliberately do NOT fall back to O(boards × stacks) iteration
             # in the search hot path; treat as accessible.
             logger.warning(
-                "No deck metadata in Qdrant for card %s; keeping result "
-                "(verification skipped, legacy data without board_id/stack_id)",
+                "Incomplete deck metadata for card %s (board_id=%s, stack_id=%s); "
+                "keeping result (verification skipped, legacy data)",
                 doc_id,
+                board_id,
+                stack_id,
             )
             accessible.add(doc_id)
             return
 
-        try:
-            await client.deck.get_card(
-                board_id=meta["board_id"],
-                stack_id=meta["stack_id"],
-                card_id=int(doc_id),
-            )
-            accessible.add(doc_id)
-        except HTTPStatusError as e:
-            if _is_definitive_404_or_403(e):
-                return
-            logger.warning(
-                "Transient error verifying deck card %s: %s %s; keeping result",
-                doc_id,
-                e.response.status_code,
-                e,
-            )
-            accessible.add(doc_id)
-        except Exception as e:
-            logger.warning(
-                "Unexpected error verifying deck card %s: %s; keeping result",
-                doc_id,
-                e,
-            )
-            accessible.add(doc_id)
+        async with semaphore:
+            try:
+                await client.deck.get_card(
+                    board_id=int(board_id),
+                    stack_id=int(stack_id),
+                    card_id=int(doc_id),
+                )
+                accessible.add(doc_id)
+            except HTTPStatusError as e:
+                if _is_definitive_404_or_403(e):
+                    return
+                logger.warning(
+                    "Transient error verifying deck card %s: %s %s; keeping result",
+                    doc_id,
+                    e.response.status_code,
+                    e,
+                )
+                accessible.add(doc_id)
+            except Exception as e:
+                logger.warning(
+                    "Unexpected error verifying deck card %s: %s; keeping result",
+                    doc_id,
+                    e,
+                )
+                accessible.add(doc_id)
 
     async with anyio.create_task_group() as tg:
-        for doc_id in doc_ids:
-            tg.start_soon(check, doc_id)
+        for r in results:
+            tg.start_soon(check, r)
 
     return accessible
 
 
 async def _verify_news_items(
-    client: Any, doc_ids: list[int | str], user_id: str
+    client: Any, results: list[SearchResult], semaphore: anyio.Semaphore
 ) -> set[int | str]:
     """Batch-verify news items with a single fetch.
 
     The Nextcloud News API has no per-item endpoint, so ``news.get_item`` is
     implemented as a fetch-all + filter — which would be O(N × all_items) if
-    called per id. Instead we fetch once and intersect.
+    called per id. Instead we fetch once and intersect. The semaphore is
+    accepted for signature symmetry but not heavily used (one round-trip total).
     """
-    requested = {int(d) for d in doc_ids}
+    doc_ids = [r.id for r in results]
 
-    try:
-        items = await client.news.get_items(batch_size=-1, get_read=True)
-    except HTTPStatusError as e:
-        # If the News API itself is gone (app disabled, user lost access),
-        # treat *all* requested items as inaccessible. Eviction will reclaim.
-        if _is_definitive_404_or_403(e):
-            logger.info(
-                "News API returned %s for user %s; treating all %d news_items as inaccessible",
+    async with semaphore:
+        try:
+            items = await client.news.get_items(batch_size=-1, get_read=True)
+        except HTTPStatusError as e:
+            # If the News API itself is gone (app disabled, user lost access),
+            # treat *all* requested items as inaccessible. Eviction will reclaim.
+            if _is_definitive_404_or_403(e):
+                logger.info(
+                    "News API returned %s for user %s; treating all %d news_items as inaccessible",
+                    e.response.status_code,
+                    client.username,
+                    len(doc_ids),
+                )
+                return set()
+            logger.warning(
+                "Transient error fetching news items for verification: %s %s; keeping all results",
                 e.response.status_code,
-                user_id,
-                len(requested),
+                e,
             )
-            return set()
-        logger.warning(
-            "Transient error fetching news items for verification: %s %s; keeping all results",
-            e.response.status_code,
-            e,
-        )
-        return set(doc_ids)
-    except Exception as e:
-        logger.warning(
-            "Unexpected error fetching news items for verification: %s; keeping all results",
-            e,
-        )
-        return set(doc_ids)
+            return set(doc_ids)
+        except Exception as e:
+            logger.warning(
+                "Unexpected error fetching news items for verification: %s; keeping all results",
+                e,
+            )
+            return set(doc_ids)
 
     present_ids = {int(item.get("id")) for item in items if item.get("id") is not None}
-    # Map back to the original doc_id types (the caller may pass ints or strs)
+    # Map back to the original doc_id types (caller may pass ints or strs).
     accessible: set[int | str] = set()
     for d in doc_ids:
-        if int(d) in present_ids and int(d) in requested:
+        if int(d) in present_ids:
             accessible.add(d)
     return accessible
 
@@ -256,77 +283,6 @@ def get_supported_doc_types() -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Qdrant payload lookup helpers
-# ---------------------------------------------------------------------------
-
-
-async def _resolve_file_path(user_id: str, doc_id: int | str) -> str | None:
-    """Look up file_path for a file_id from any chunk's Qdrant payload."""
-    try:
-        qdrant_client = await get_qdrant_client()
-        settings = get_settings()
-
-        scroll_result = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value="file")),
-                ]
-            ),
-            limit=1,
-            with_payload=["file_path"],
-            with_vectors=False,
-        )
-
-        if scroll_result[0]:
-            point = scroll_result[0][0]
-            file_path = point.payload.get("file_path") if point.payload else None
-            if file_path:
-                return str(file_path)
-        return None
-
-    except Exception as e:
-        logger.debug("Error resolving file_path for file_id %s: %s", doc_id, e)
-        return None
-
-
-async def _resolve_deck_metadata(user_id: str, card_id: int) -> dict[str, int] | None:
-    """Look up (board_id, stack_id) for a deck card from any chunk's payload."""
-    try:
-        qdrant_client = await get_qdrant_client()
-        settings = get_settings()
-
-        scroll_result = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-                    FieldCondition(key="doc_id", match=MatchValue(value=card_id)),
-                    FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
-                ]
-            ),
-            limit=1,
-            with_payload=["board_id", "stack_id"],
-            with_vectors=False,
-        )
-
-        if scroll_result[0]:
-            point = scroll_result[0][0]
-            payload = point.payload or {}
-            board_id = payload.get("board_id")
-            stack_id = payload.get("stack_id")
-            if board_id is not None and stack_id is not None:
-                return {"board_id": int(board_id), "stack_id": int(stack_id)}
-        return None
-
-    except Exception as e:
-        logger.debug("Error resolving deck metadata for card %s: %s", card_id, e)
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -336,13 +292,14 @@ async def verify_search_results(
     results: list[SearchResult],
     *,
     evict_on_missing: bool = True,
+    max_concurrent: int = DEFAULT_VERIFICATION_CONCURRENCY,
 ) -> list[SearchResult]:
     """Filter search results to those the user can currently access.
 
     Deduplicates by ``(doc_id, doc_type)`` before verifying, so multiple
     chunks from the same document cost a single check. Verifiers run
-    concurrently per doc_type (and within each doc_type, per id where that
-    is cheaper than batching).
+    concurrently per doc_type and concurrently per id within each verifier,
+    bounded by a shared semaphore (``max_concurrent``).
 
     When ``evict_on_missing=True``, points for documents that fail
     verification are deleted from Qdrant in-line. Eviction failures are
@@ -353,6 +310,8 @@ async def verify_search_results(
         results: SearchResult list from the algorithm layer (may include
             multiple chunks per document).
         evict_on_missing: Schedule lazy eviction for inaccessible docs.
+        max_concurrent: Cap on concurrent verification round-trips against
+            Nextcloud. Defaults to ``DEFAULT_VERIFICATION_CONCURRENCY``.
 
     Returns:
         Filtered list preserving the original order.
@@ -363,28 +322,33 @@ async def verify_search_results(
     user_id: str = client.username
 
     # Group unique (doc_id, doc_type) by doc_type so each verifier sees a
-    # deduplicated batch.
-    by_type: dict[str, set[int | str]] = {}
+    # deduplicated batch. We pick one SearchResult per (id, doc_type) to carry
+    # metadata (path, board_id/stack_id) into the verifier — chunks of the
+    # same document share these fields, so any chunk works.
+    by_type: dict[str, dict[int | str, SearchResult]] = {}
     for r in results:
-        by_type.setdefault(r.doc_type, set()).add(r.id)
+        by_type.setdefault(r.doc_type, {}).setdefault(r.id, r)
 
-    # Run all type verifiers concurrently. Per-id failures are absorbed
-    # inside each verifier; this outer task group only fans out per type.
+    # Shared semaphore bounds total Nextcloud round-trips across all
+    # per-id verifiers. Without it, a 50-result mostly-notes page could fan
+    # out 50 concurrent get_note calls and exhaust the connection pool.
+    semaphore = anyio.Semaphore(max_concurrent)
+
     accessible_by_type: dict[str, set[int | str]] = {}
 
-    async def run_verifier(doc_type: str, doc_ids: set[int | str]) -> None:
+    async def run_verifier(doc_type: str, unique_results: list[SearchResult]) -> None:
         verifier = _VERIFIERS.get(doc_type)
         if verifier is None:
             logger.warning(
                 "No verifier registered for doc_type=%r; keeping %d result(s) unverified",
                 doc_type,
-                len(doc_ids),
+                len(unique_results),
             )
-            accessible_by_type[doc_type] = doc_ids
+            accessible_by_type[doc_type] = {r.id for r in unique_results}
             return
         try:
             accessible_by_type[doc_type] = await verifier(
-                client, list(doc_ids), user_id
+                client, unique_results, semaphore
             )
         except Exception as e:
             # Verifier itself blew up (not per-id) — fail open.
@@ -392,20 +356,20 @@ async def verify_search_results(
                 "Verifier for doc_type=%s raised: %s; keeping all %d result(s) unverified",
                 doc_type,
                 e,
-                len(doc_ids),
+                len(unique_results),
                 exc_info=True,
             )
-            accessible_by_type[doc_type] = doc_ids
+            accessible_by_type[doc_type] = {r.id for r in unique_results}
 
     async with anyio.create_task_group() as tg:
-        for doc_type, doc_ids in by_type.items():
-            tg.start_soon(run_verifier, doc_type, doc_ids)
+        for doc_type, id_to_result in by_type.items():
+            tg.start_soon(run_verifier, doc_type, list(id_to_result.values()))
 
     # Compute (doc_id, doc_type) pairs that failed verification
     inaccessible: set[tuple[int | str, str]] = set()
-    for doc_type, doc_ids in by_type.items():
-        accessible = accessible_by_type.get(doc_type, doc_ids)
-        for doc_id in doc_ids:
+    for doc_type, id_to_result in by_type.items():
+        accessible = accessible_by_type.get(doc_type, set(id_to_result.keys()))
+        for doc_id in id_to_result.keys():
             if doc_id not in accessible:
                 inaccessible.add((doc_id, doc_type))
 
@@ -416,11 +380,15 @@ async def verify_search_results(
             sorted((str(d), t) for d, t in inaccessible),
         )
 
-    # Filter results in-place-style, preserving order
+    # Filter results, preserving order. All chunks of an inaccessible document
+    # are dropped together (dedup happened before verification, but the result
+    # list still contains all chunks).
     kept = [r for r in results if (r.id, r.doc_type) not in inaccessible]
 
-    # Lazy eviction — fire and forget, but bounded inline so we don't lose
-    # the user_id binding by escaping the task group.
+    # Lazy eviction. Runs inline before returning — slow Qdrant will delay
+    # the search response. Background eviction would need a task registered
+    # on the lifespan context; the inline approach is acceptable given
+    # typical Qdrant delete latency, but callers should be aware.
     if evict_on_missing and inaccessible:
 
         async def evict(doc_id: int | str, doc_type: str) -> None:

@@ -67,6 +67,11 @@ class NextcloudClientProtocol(Protocol):
         """Tables client for accessing table row documents."""
         ...
 
+    @property
+    def news(self) -> Any:
+        """News client for accessing news item documents."""
+        ...
+
 
 async def get_indexed_doc_types(user_id: str) -> set[str]:
     """Query Qdrant to get actually-indexed document types for a user.
@@ -127,7 +132,9 @@ class SearchResult:
     """A single search result with metadata and score.
 
     Attributes:
-        id: Document ID (int for all document types)
+        id: Document ID. Numeric for indexed types today (notes, files,
+            deck cards, news items), but typed as ``int | str`` to allow
+            future doc types that use string identifiers (e.g., file paths).
         doc_type: Document type (note, file, calendar, contact, etc.)
         title: Document title
         excerpt: Content excerpt showing match context
@@ -144,7 +151,7 @@ class SearchResult:
         point_id: Qdrant point ID for batch vector retrieval (None if not from Qdrant)
     """
 
-    id: int
+    id: int | str
     doc_type: str
     title: str
     excerpt: str

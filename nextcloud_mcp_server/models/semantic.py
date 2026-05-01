@@ -10,7 +10,13 @@ from .base import BaseResponse
 class SemanticSearchResult(BaseModel):
     """Model for semantic search results with additional metadata."""
 
-    id: int = Field(description="Document ID (int for all document types)")
+    id: int | str = Field(
+        description=(
+            "Document ID. Numeric for all currently indexed types (notes, files, "
+            "deck cards, news items); typed as int|str to allow future doc types "
+            "that use string identifiers."
+        )
+    )
     doc_type: str = Field(
         description="Document type (note, calendar_event, deck_card, etc.)"
     )

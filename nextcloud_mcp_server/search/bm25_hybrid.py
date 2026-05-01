@@ -233,9 +233,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     metadata["path"] = path
 
                 # Add deck_card-specific metadata for frontend URL construction
+                # and verify-on-read (ADR-019) — both board_id and stack_id are
+                # required to call deck.get_card without an O(boards × stacks)
+                # iteration fallback.
                 if doc_type == "deck_card":
                     if board_id := result.payload.get("board_id"):
                         metadata["board_id"] = board_id
+                    if stack_id := result.payload.get("stack_id"):
+                        metadata["stack_id"] = stack_id
 
                 # Return unverified results (verification happens at output stage)
                 results.append(

@@ -1,6 +1,6 @@
 # ADR-019: Verify-on-Read for Semantic Search Results
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-05-01
 **Depends On**: ADR-007 (Background Vector Sync), ADR-010 (Webhook-Based Vector Sync)
 

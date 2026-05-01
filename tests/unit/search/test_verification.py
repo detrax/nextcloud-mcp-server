@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import anyio
 import httpx
 import pytest
 from httpx import HTTPStatusError
@@ -22,11 +23,16 @@ from nextcloud_mcp_server.search.verification import (
 # ---------------------------------------------------------------------------
 
 
+def _sem(slots: int = 20) -> anyio.Semaphore:
+    return anyio.Semaphore(slots)
+
+
 def _make_result(
-    doc_id: int,
+    doc_id: int | str,
     doc_type: str = "note",
     chunk_index: int = 0,
     score: float = 0.9,
+    metadata: dict | None = None,
 ) -> SearchResult:
     return SearchResult(
         id=doc_id,
@@ -35,6 +41,7 @@ def _make_result(
         excerpt="...",
         score=score,
         chunk_index=chunk_index,
+        metadata=metadata,
     )
 
 
@@ -72,7 +79,9 @@ async def test_verify_notes_200_keeps_all(mocker):
     )
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [1, 2, 3], "alice")
+    result = await _verify_notes(
+        client, [_make_result(1), _make_result(2), _make_result(3)], _sem()
+    )
 
     assert result == {1, 2, 3}
     assert notes_client.get_note.await_count == 3
@@ -85,7 +94,7 @@ async def test_verify_notes_404_drops(mocker):
     )
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [42], "alice")
+    result = await _verify_notes(client, [_make_result(42)], _sem())
 
     assert result == set()
 
@@ -97,7 +106,7 @@ async def test_verify_notes_403_drops(mocker):
     )
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [42], "alice")
+    result = await _verify_notes(client, [_make_result(42)], _sem())
 
     assert result == set()
 
@@ -110,7 +119,7 @@ async def test_verify_notes_transient_5xx_keeps(mocker):
     )
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [42], "alice")
+    result = await _verify_notes(client, [_make_result(42)], _sem())
 
     assert result == {42}
 
@@ -122,7 +131,7 @@ async def test_verify_notes_unexpected_exception_keeps(mocker):
     )
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [7], "alice")
+    result = await _verify_notes(client, [_make_result(7)], _sem())
 
     assert result == {7}
 
@@ -143,7 +152,9 @@ async def test_verify_notes_mixed_outcomes(mocker):
     notes_client = SimpleNamespace(get_note=mocker.AsyncMock(side_effect=side_effect))
     client = SimpleNamespace(notes=notes_client, username="alice")
 
-    result = await _verify_notes(client, [1, 2, 3], "alice")
+    result = await _verify_notes(
+        client, [_make_result(1), _make_result(2), _make_result(3)], _sem()
+    )
 
     assert result == {1, 3}
 
@@ -161,7 +172,15 @@ async def test_verify_news_items_intersects_with_fetched_set(mocker):
     )
     client = SimpleNamespace(news=news_client, username="alice")
 
-    result = await _verify_news_items(client, [10, 20, 99], "alice")
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(10, doc_type="news_item"),
+            _make_result(20, doc_type="news_item"),
+            _make_result(99, doc_type="news_item"),
+        ],
+        _sem(),
+    )
 
     assert result == {10, 20}
     assert news_client.get_items.await_count == 1
@@ -174,7 +193,15 @@ async def test_verify_news_items_api_404_drops_all(mocker):
     )
     client = SimpleNamespace(news=news_client, username="alice")
 
-    result = await _verify_news_items(client, [1, 2, 3], "alice")
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(1, doc_type="news_item"),
+            _make_result(2, doc_type="news_item"),
+            _make_result(3, doc_type="news_item"),
+        ],
+        _sem(),
+    )
 
     assert result == set()
 
@@ -186,7 +213,15 @@ async def test_verify_news_items_transient_keeps_all(mocker):
     )
     client = SimpleNamespace(news=news_client, username="alice")
 
-    result = await _verify_news_items(client, [1, 2, 3], "alice")
+    result = await _verify_news_items(
+        client,
+        [
+            _make_result(1, doc_type="news_item"),
+            _make_result(2, doc_type="news_item"),
+            _make_result(3, doc_type="news_item"),
+        ],
+        _sem(),
+    )
 
     assert result == {1, 2, 3}
 
@@ -197,16 +232,18 @@ async def test_verify_news_items_transient_keeps_all(mocker):
 
 
 @pytest.mark.unit
-async def test_verify_files_uses_propfind_when_path_resolves(mocker):
-    mocker.patch.object(
-        verification, "_resolve_file_path", return_value="Documents/foo.txt"
-    )
+async def test_verify_files_uses_path_from_metadata(mocker):
+    """File verifier reads path from SearchResult.metadata, no Qdrant round-trip."""
     webdav_client = SimpleNamespace(
         get_file_info=mocker.AsyncMock(return_value={"id": 100})
     )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
-    result = await _verify_files(client, [100], "alice")
+    result = await _verify_files(
+        client,
+        [_make_result(100, doc_type="file", metadata={"path": "Documents/foo.txt"})],
+        _sem(),
+    )
 
     assert result == {100}
     webdav_client.get_file_info.assert_awaited_once_with("Documents/foo.txt")
@@ -215,26 +252,53 @@ async def test_verify_files_uses_propfind_when_path_resolves(mocker):
 @pytest.mark.unit
 async def test_verify_files_404_via_get_file_info_drops(mocker):
     """get_file_info returns None on 404 — that's a definitive drop."""
-    mocker.patch.object(verification, "_resolve_file_path", return_value="gone.txt")
     webdav_client = SimpleNamespace(get_file_info=mocker.AsyncMock(return_value=None))
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
-    result = await _verify_files(client, [123], "alice")
+    result = await _verify_files(
+        client,
+        [_make_result(123, doc_type="file", metadata={"path": "gone.txt"})],
+        _sem(),
+    )
 
     assert result == set()
 
 
 @pytest.mark.unit
-async def test_verify_files_missing_payload_keeps_unverified(mocker):
-    """Without a file_path we cannot verify — fail open, don't drop."""
-    mocker.patch.object(verification, "_resolve_file_path", return_value=None)
-    webdav_client = SimpleNamespace(get_file_info=mocker.AsyncMock(return_value=None))
+async def test_verify_files_missing_path_metadata_keeps_unverified(mocker):
+    """Without a path in metadata we cannot verify — fail open, don't drop."""
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=AssertionError("must not be called"))
+    )
     client = SimpleNamespace(webdav=webdav_client, username="alice")
 
-    result = await _verify_files(client, [555], "alice")
-
+    # No metadata at all
+    result = await _verify_files(client, [_make_result(555, doc_type="file")], _sem())
     assert result == {555}
     webdav_client.get_file_info.assert_not_awaited()
+
+    # Metadata present but no "path" key
+    result = await _verify_files(
+        client, [_make_result(556, doc_type="file", metadata={})], _sem()
+    )
+    assert result == {556}
+    webdav_client.get_file_info.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_verify_files_transient_5xx_keeps(mocker):
+    webdav_client = SimpleNamespace(
+        get_file_info=mocker.AsyncMock(side_effect=_http_error(503))
+    )
+    client = SimpleNamespace(webdav=webdav_client, username="alice")
+
+    result = await _verify_files(
+        client,
+        [_make_result(7, doc_type="file", metadata={"path": "x.txt"})],
+        _sem(),
+    )
+
+    assert result == {7}
 
 
 # ---------------------------------------------------------------------------
@@ -244,15 +308,21 @@ async def test_verify_files_missing_payload_keeps_unverified(mocker):
 
 @pytest.mark.unit
 async def test_verify_deck_cards_uses_metadata_fast_path(mocker):
-    mocker.patch.object(
-        verification,
-        "_resolve_deck_metadata",
-        return_value={"board_id": 1, "stack_id": 2},
-    )
+    """Deck verifier reads board_id+stack_id from metadata, no Qdrant round-trip."""
     deck_client = SimpleNamespace(get_card=mocker.AsyncMock(return_value=object()))
     client = SimpleNamespace(deck=deck_client, username="alice")
 
-    result = await _verify_deck_cards(client, [42], "alice")
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
 
     assert result == {42}
     deck_client.get_card.assert_awaited_once_with(board_id=1, stack_id=2, card_id=42)
@@ -261,33 +331,56 @@ async def test_verify_deck_cards_uses_metadata_fast_path(mocker):
 @pytest.mark.unit
 async def test_verify_deck_cards_403_drops(mocker):
     """Board unshared with user → 403 from get_card → drop."""
-    mocker.patch.object(
-        verification,
-        "_resolve_deck_metadata",
-        return_value={"board_id": 1, "stack_id": 2},
-    )
     deck_client = SimpleNamespace(
         get_card=mocker.AsyncMock(side_effect=_http_error(403))
     )
     client = SimpleNamespace(deck=deck_client, username="alice")
 
-    result = await _verify_deck_cards(client, [42], "alice")
+    result = await _verify_deck_cards(
+        client,
+        [
+            _make_result(
+                42,
+                doc_type="deck_card",
+                metadata={"board_id": 1, "stack_id": 2},
+            )
+        ],
+        _sem(),
+    )
 
     assert result == set()
 
 
 @pytest.mark.unit
-async def test_verify_deck_cards_no_metadata_skips_verification(mocker):
-    """Legacy data without board_id/stack_id payload → keep, do NOT iterate."""
-    mocker.patch.object(verification, "_resolve_deck_metadata", return_value=None)
+async def test_verify_deck_cards_missing_metadata_keeps_unverified(mocker):
+    """Legacy data without board_id/stack_id → keep, do NOT iterate or call API."""
     deck_client = SimpleNamespace(
         get_card=mocker.AsyncMock(side_effect=AssertionError("must not be called"))
     )
     client = SimpleNamespace(deck=deck_client, username="alice")
 
-    result = await _verify_deck_cards(client, [42], "alice")
-
+    # No metadata at all
+    result = await _verify_deck_cards(
+        client, [_make_result(42, doc_type="deck_card")], _sem()
+    )
     assert result == {42}
+
+    # Only board_id (stack_id missing)
+    result = await _verify_deck_cards(
+        client,
+        [_make_result(43, doc_type="deck_card", metadata={"board_id": 1})],
+        _sem(),
+    )
+    assert result == {43}
+
+    # Only stack_id (board_id missing)
+    result = await _verify_deck_cards(
+        client,
+        [_make_result(44, doc_type="deck_card", metadata={"stack_id": 2})],
+        _sem(),
+    )
+    assert result == {44}
+
     deck_client.get_card.assert_not_awaited()
 
 
@@ -320,9 +413,12 @@ async def test_verify_search_results_dedupes_chunks_per_document(mocker):
 
     assert len(kept) == 3  # all kept, all reference the same accessible doc
     spy.assert_awaited_once()
-    # Verifier received the single deduplicated id, not three copies
+    # Verifier received exactly one SearchResult (the deduplicated representative)
     args, _kwargs = spy.call_args
-    assert args[1] == [1]
+    assert len(args[1]) == 1
+    assert args[1][0].id == 1
+    # And a semaphore as the third arg
+    assert isinstance(args[2], anyio.Semaphore)
 
 
 @pytest.mark.unit
@@ -454,8 +550,8 @@ async def test_verify_search_results_dispatches_per_doc_type_concurrently(mocker
 
     results = [
         _make_result(1, doc_type="note"),
-        _make_result(500, doc_type="file"),
-        _make_result(999, doc_type="file"),  # to be dropped
+        _make_result(500, doc_type="file", metadata={"path": "a.txt"}),
+        _make_result(999, doc_type="file", metadata={"path": "b.txt"}),  # to be dropped
     ]
     client = SimpleNamespace(username="alice")
 
@@ -464,3 +560,21 @@ async def test_verify_search_results_dispatches_per_doc_type_concurrently(mocker
     assert {(r.id, r.doc_type) for r in kept} == {(1, "note"), (500, "file")}
     note_verifier.assert_awaited_once()
     file_verifier.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_verify_search_results_passes_semaphore_to_verifier(mocker):
+    """The dispatcher must construct a Semaphore and pass it to verifiers."""
+    captured: dict[str, anyio.Semaphore] = {}
+
+    async def verifier(client, results, semaphore):
+        captured["sem"] = semaphore
+        return {r.id for r in results}
+
+    mocker.patch.dict(verification._VERIFIERS, {"note": verifier}, clear=False)
+    mocker.patch.object(verification, "delete_document_points", mocker.AsyncMock())
+
+    client = SimpleNamespace(username="alice")
+    await verify_search_results(client, [_make_result(1)], max_concurrent=5)
+
+    assert isinstance(captured["sem"], anyio.Semaphore)

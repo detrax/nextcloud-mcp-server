@@ -142,8 +142,13 @@ def configure_semantic_tools(mcp: FastMCP):
                     )
                     all_results.extend(unverified_results)
 
-                # Sort combined results by score
+                # Sort combined results by score, then cap to `limit * 2` to
+                # match the cross-app branch's over-fetch budget. Without this
+                # cap, N requested doc_types × `limit * 2` results would all
+                # flow into verification, multiplying the Nextcloud round-trip
+                # cost by N.
                 all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[: limit * 2]
 
             # ADR-019: Verify-on-read. The vector index is a recall layer;
             # Nextcloud is the source of truth for access. Filter out ghost
@@ -300,7 +305,7 @@ def configure_semantic_tools(mcp: FastMCP):
         title="Search with AI-Generated Answer",
         annotations=ToolAnnotations(
             readOnlyHint=True,  # Search doesn't modify data
-            openWorldHint=False,  # Searches only indexed Nextcloud data
+            openWorldHint=True,  # Calls into Nextcloud via nc_semantic_search
         ),
     )
     @require_scopes("semantic.read")
@@ -432,7 +437,7 @@ def configure_semantic_tools(mcp: FastMCP):
             async with semaphore:
                 if result.doc_type == "note":
                     try:
-                        note = await client.notes.get_note(result.id)
+                        note = await client.notes.get_note(int(result.id))
                         content = note.get("content", "")
                         accessible_results[index] = result
                         full_contents[index] = content
