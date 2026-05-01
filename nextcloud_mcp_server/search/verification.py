@@ -139,11 +139,25 @@ async def _verify_files(
             try:
                 info = await client.webdav.get_file_info(file_path)
                 if info is None:
-                    # Contract: WebDAVClient.get_file_info returns None on 404
-                    # and raises HTTPStatusError on 403/5xx/network. If that
-                    # contract changes (e.g. a future refactor that raises 404
-                    # like other client methods), the `except HTTPStatusError`
-                    # block below already handles it via _is_definitive_404_or_403.
+                    # Contract: WebDAVClient.get_file_info returns None in two
+                    # cases — (1) HTTP 404, and (2) a malformed PROPFIND XML
+                    # response (missing <d:response>, <d:propstat>, or <d:prop>
+                    # — see client/webdav.py). Both are treated as
+                    # "inaccessible" and trigger eviction.
+                    #
+                    # Trade-off: a malformed response from a brittle backend
+                    # could cause a *false* eviction. We accept that risk in
+                    # exchange for correctness on real 404s — the index
+                    # self-heals via re-indexing on the next scan, and
+                    # malformed responses are exceedingly rare in practice.
+                    # Distinguishing the two cases would require widening
+                    # get_file_info's return contract; deferred to a future
+                    # change if false evictions become observable.
+                    #
+                    # If the contract ever changes (e.g. 404 raises
+                    # HTTPStatusError like other client methods), the
+                    # `except HTTPStatusError` block below already handles
+                    # it via _is_definitive_404_or_403.
                     return
                 accessible.add(doc_id)
             except HTTPStatusError as e:
@@ -355,7 +369,7 @@ async def verify_search_results(
     evict_on_missing: bool = True,
     max_concurrent: int | None = None,
     eviction_task_group: TaskGroup | None = None,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], int]:
     """Filter search results to those the user can currently access.
 
     Deduplicates by ``(doc_id, doc_type)`` before verifying, so multiple
@@ -386,10 +400,13 @@ async def verify_search_results(
             from FastMCP tools.
 
     Returns:
-        Filtered list preserving the original order.
+        Tuple of ``(kept_results, dropped_count)`` where ``kept_results`` is
+        the filtered list preserving the original order and ``dropped_count``
+        is the number of unique ``(doc_id, doc_type)`` pairs that failed
+        verification (ghost records).
     """
     if not results:
-        return results
+        return results, 0
 
     user_id: str = client.username
 
@@ -443,6 +460,9 @@ async def verify_search_results(
     # Compute (doc_id, doc_type) pairs that failed verification
     inaccessible: set[tuple[int | str, str]] = set()
     for doc_type, id_to_result in by_type.items():
+        # The .get() default is defensive only — run_verifier always populates
+        # accessible_by_type[doc_type], either with the verifier's result or
+        # with all ids on verifier crash (fail-open).
         accessible = accessible_by_type.get(doc_type, set(id_to_result.keys()))
         for doc_id in id_to_result.keys():
             if doc_id not in accessible:
@@ -492,11 +512,11 @@ async def verify_search_results(
                 # best-effort: the next query re-verifies and re-attempts.
                 try:
                     eviction_task_group.start_soon(evict, doc_id, doc_type)
-                except Exception:
+                except RuntimeError:
                     logger.debug("Eviction task group closed; will retry on next query")
         else:
             async with anyio.create_task_group() as tg:
                 for doc_id, doc_type in inaccessible:
                     tg.start_soon(evict, doc_id, doc_type)
 
-    return kept
+    return kept, len(inaccessible)

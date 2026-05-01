@@ -80,6 +80,22 @@ class SemanticSearchResponse(BaseResponse):
     search_method: str = Field(
         default="semantic", description="Search method used (semantic or hybrid)"
     )
+    verified_count: int = Field(
+        default=0,
+        description=(
+            "Number of unique documents that passed verify-on-read access "
+            "checks (ADR-019). Equals len(results) before trimming to limit."
+        ),
+    )
+    dropped_count: int = Field(
+        default=0,
+        description=(
+            "Number of unique documents dropped as ghost records during "
+            "verify-on-read (ADR-019). A short result page (len(results) < "
+            "limit) combined with a non-zero dropped_count indicates ghost "
+            "density rather than scarcity of relevant content."
+        ),
+    )
 
 
 class SamplingSearchResponse(BaseResponse):

@@ -498,9 +498,12 @@ aware of:
   verifier issues a single `news.get_items(batch_size=-1, get_read=True)` call
   per search that contains any news result, then intersects locally. The
   payload is **unbounded** — for users with very large feed backlogs this can
-  dominate verification latency. Disabling News in the indexer or running with
-  a smaller backlog mitigates this; per-item paginated verification is tracked
-  as a future improvement.
+  dominate verification latency. As a rough guide on a healthy LAN connection:
+  a typical purged backlog (1k–5k items) returns in ~200–500 ms; very large
+  backlogs (>20k items) can exceed 2 s and become the dominant cost of any
+  search that surfaces news results. Disabling News in the indexer or running
+  with a smaller backlog mitigates this; per-item paginated verification is
+  tracked as a future improvement.
 - **Eviction**: when verification finds a definitive miss (404 / 403), the
   corresponding Qdrant points are deleted in the background on a lifespan-owned
   task group — fire-and-forget, does **not** block the search response.

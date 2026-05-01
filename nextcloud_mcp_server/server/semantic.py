@@ -172,11 +172,12 @@ def configure_semantic_tools(mcp: FastMCP):
             eviction_task_group = getattr(
                 ctx.request_context.lifespan_context, "eviction_task_group", None
             )
-            verified_results = await verify_search_results(
+            verified_results, dropped_count = await verify_search_results(
                 client,
                 all_results,
                 eviction_task_group=eviction_task_group,
             )
+            verified_count = len(verified_results)
             search_results = verified_results[:limit]
 
             # Convert SearchResult objects to SemanticSearchResult for response.
@@ -188,9 +189,24 @@ def configure_semantic_tools(mcp: FastMCP):
             # public API.
             results = []
             for r in search_results:
+                try:
+                    narrowed_id = int(r.id)
+                except (TypeError, ValueError) as e:
+                    # Re-raise with explicit context so the outer handler logs
+                    # something operators can act on (the generic "Search
+                    # failed: invalid literal for int()" is opaque).
+                    raise TypeError(
+                        f"SemanticSearchResult.id must be int-convertible, "
+                        f"got {r.id!r} (type={type(r.id).__name__}) for "
+                        f"doc_type={r.doc_type!r}. This indicates a doc_type "
+                        f"with non-numeric ids has been indexed but the "
+                        f"public response model has not been widened. Add "
+                        f"the doc_type to the SemanticSearchResult.id type "
+                        f"or convert at the verifier layer."
+                    ) from e
                 results.append(
                     SemanticSearchResult(
-                        id=int(r.id),
+                        id=narrowed_id,
                         doc_type=r.doc_type,
                         title=r.title,
                         category=r.metadata.get("category", "") if r.metadata else "",
@@ -304,6 +320,8 @@ def configure_semantic_tools(mcp: FastMCP):
                 query=query,
                 total_found=len(results),
                 search_method=f"bm25_hybrid_{fusion}",
+                verified_count=verified_count,
+                dropped_count=dropped_count,
             )
 
         except ValueError as e:
@@ -382,6 +400,14 @@ def configure_semantic_tools(mcp: FastMCP):
         Note: Requires MCP client to support sampling. If sampling is unavailable,
         the tool gracefully degrades to returning documents with an explanation.
         The client may prompt the user to approve the sampling request.
+
+        Latency profile: For each note in the result page, this tool fetches
+        the full note body via ``client.notes.get_note`` after upstream
+        verify-on-read has already round-tripped to the same endpoint as a
+        race guard (ADR-019). Expect one additional Nextcloud round-trip per
+        note result; raising ``limit`` above the default of 5 amplifies this
+        cost roughly linearly. File / news / deck results do not pay this
+        cost — they reuse the verified excerpt.
         """
         # 1. Retrieve relevant documents via existing semantic search
         search_response = await nc_semantic_search(

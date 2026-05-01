@@ -266,6 +266,33 @@ async def test_verify_news_items_transient_keeps_all(mocker):
     assert result == {1, 2, 3}
 
 
+@pytest.mark.unit
+async def test_verify_news_items_non_numeric_id_keeps_all(mocker):
+    """One non-numeric doc_id triggers fail-open for the WHOLE result set.
+
+    The intersection logic in `_verify_news_items` tries `int(d)` for each
+    incoming doc_id; a single non-numeric value (e.g. ``"abc"``) raises
+    ValueError inside the intersection loop. The except block must catch it
+    and return the full input set (fail open) rather than dropping anything.
+    This is intentional v1 behaviour — surfacing one bad id should not
+    drop legitimate adjacent results.
+    """
+    news_client = SimpleNamespace(
+        get_items=mocker.AsyncMock(return_value=[{"id": 10}, {"id": 20}])
+    )
+    client = SimpleNamespace(news=news_client, username="alice")
+
+    doc_ids: list[int | str] = [10, 20, "abc"]
+    result = await _verify_news_items(
+        client,
+        [_make_result(d, doc_type="news_item") for d in doc_ids],
+        _sem(),
+    )
+
+    # Fail-open: every requested id is preserved, INCLUDING the bad one.
+    assert result == {10, 20, "abc"}
+
+
 # ---------------------------------------------------------------------------
 # File verifier
 # ---------------------------------------------------------------------------
@@ -449,7 +476,7 @@ async def test_verify_deck_cards_missing_metadata_keeps_unverified(mocker):
 @pytest.mark.unit
 async def test_verify_search_results_empty_input_passthrough():
     client = SimpleNamespace(username="alice")
-    assert await verify_search_results(client, []) == []
+    assert await verify_search_results(client, []) == ([], 0)
 
 
 @pytest.mark.unit
@@ -466,9 +493,10 @@ async def test_verify_search_results_dedupes_chunks_per_document(mocker):
     ]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert len(kept) == 3  # all kept, all reference the same accessible doc
+    assert dropped_count == 0
     spy.assert_awaited_once()
     # Verifier received exactly one SearchResult (the deduplicated representative)
     args, _kwargs = spy.call_args
@@ -494,9 +522,10 @@ async def test_verify_search_results_drops_inaccessible_and_evicts(mocker):
     ]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert [r.id for r in kept] == [1]
+    assert dropped_count == 1
     spy_evict.assert_awaited_once_with(99, "note", "alice")
 
 
@@ -530,9 +559,12 @@ async def test_verify_search_results_fire_and_forget_eviction(mocker):
     client = SimpleNamespace(username="alice")
 
     async with anyio.create_task_group() as tg:
-        kept = await verify_search_results(client, results, eviction_task_group=tg)
+        kept, dropped_count = await verify_search_results(
+            client, results, eviction_task_group=tg
+        )
         # 1. Search response was returned …
         assert kept == []
+        assert dropped_count == 1
         # 2. … even though eviction has started but not finished.
         await eviction_started.wait()
         assert not eviction_completed.is_set()
@@ -554,9 +586,12 @@ async def test_verify_search_results_no_eviction_when_disabled(mocker):
     results = [_make_result(7, doc_type="note")]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results, evict_on_missing=False)
+    kept, dropped_count = await verify_search_results(
+        client, results, evict_on_missing=False
+    )
 
     assert kept == []
+    assert dropped_count == 1
     spy_evict.assert_not_awaited()
 
 
@@ -575,9 +610,10 @@ async def test_verify_search_results_unknown_doc_type_passes_through(mocker, cap
     results = [_make_result(1, doc_type="calendar")]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert len(kept) == 1
+    assert dropped_count == 0
     spy_evict.assert_not_awaited()
 
 
@@ -595,9 +631,10 @@ async def test_verify_search_results_verifier_blowup_keeps_all(mocker):
     ]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert [r.id for r in kept] == [1, 2]
+    assert dropped_count == 0  # fail-open: nothing dropped
     spy_evict.assert_not_awaited()
 
 
@@ -615,9 +652,10 @@ async def test_verify_search_results_preserves_order(mocker):
     ]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert [r.id for r in kept] == [1, 3]
+    assert dropped_count == 1
 
 
 @pytest.mark.unit
@@ -633,8 +671,11 @@ async def test_verify_search_results_eviction_failure_does_not_propagate(mocker)
 
     client = SimpleNamespace(username="alice")
     # Should NOT raise
-    kept = await verify_search_results(client, [_make_result(1, doc_type="note")])
+    kept, dropped_count = await verify_search_results(
+        client, [_make_result(1, doc_type="note")]
+    )
     assert kept == []
+    assert dropped_count == 1
 
 
 @pytest.mark.unit
@@ -656,9 +697,10 @@ async def test_verify_search_results_dispatches_per_doc_type_concurrently(mocker
     ]
     client = SimpleNamespace(username="alice")
 
-    kept = await verify_search_results(client, results)
+    kept, dropped_count = await verify_search_results(client, results)
 
     assert {(r.id, r.doc_type) for r in kept} == {(1, "note"), (500, "file")}
+    assert dropped_count == 1
     note_verifier.assert_awaited_once()
     file_verifier.assert_awaited_once()
 

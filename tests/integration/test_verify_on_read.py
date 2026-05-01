@@ -58,9 +58,10 @@ async def test_verify_keeps_accessible_note(
     note_id = temporary_note["id"]
     results = [_result_for_note(note_id)]
 
-    kept = await verify_search_results(nc_client, results)
+    kept, dropped_count = await verify_search_results(nc_client, results)
 
     assert [r.id for r in kept] == [note_id]
+    assert dropped_count == 0
     spy_evict.assert_not_awaited()
 
 
@@ -96,9 +97,12 @@ async def test_verify_drops_deleted_note_and_schedules_eviction(
         await nc_client.notes.get_note(note_id)
     assert exc_info.value.response.status_code == 404
 
-    kept = await verify_search_results(nc_client, [_result_for_note(note_id)])
+    kept, dropped_count = await verify_search_results(
+        nc_client, [_result_for_note(note_id)]
+    )
 
     assert kept == [], "deleted note must not pass verification"
+    assert dropped_count == 1
     spy_evict.assert_awaited_once_with(note_id, "note", nc_client.username)
 
 
@@ -126,9 +130,10 @@ async def test_verify_mixed_accessible_and_deleted(
         _result_for_note(accessible_id),
         _result_for_note(ghost_id),
     ]
-    kept = await verify_search_results(nc_client, results)
+    kept, dropped_count = await verify_search_results(nc_client, results)
 
     assert [r.id for r in kept] == [accessible_id]
+    assert dropped_count == 1
     spy_evict.assert_awaited_once_with(ghost_id, "note", nc_client.username)
 
 
@@ -158,9 +163,10 @@ async def test_verify_dedupes_chunks_of_same_document(
         for i in range(3)
     ]
 
-    kept = await verify_search_results(nc_client, results)
+    kept, dropped_count = await verify_search_results(nc_client, results)
 
     # All three chunks kept (they're all from the same accessible note)
     assert len(kept) == 3
+    assert dropped_count == 0
     # ...but verification only fetched the note ONCE
     assert spy_get_note.await_count == 1
