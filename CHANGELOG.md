@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.79.0 (2026-05-02)
+
+### Feat
+
+- **deck**: add response filters and archived stacks tool
+
+### Fix
+
+- **deck**: address PR #759 round-3 review feedback
+- **deck**: address PR #759 round-2 review feedback
+- **deck**: address PR #759 review feedback
+
 ## v0.78.0 (2026-05-02)
 
 ### Feat
