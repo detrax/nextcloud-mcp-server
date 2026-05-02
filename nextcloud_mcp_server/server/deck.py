@@ -34,12 +34,79 @@ logger = logging.getLogger(__name__)
 def _truncate_card_descriptions(
     cards: list[DeckCard], description_max_length: int | None
 ) -> None:
-    """Truncate each card's description in-place when it exceeds the limit."""
+    """Truncate each card's description in-place when it strictly exceeds the
+    limit.
+
+    Descriptions whose length is less than or equal to ``description_max_length``
+    are left untouched (no ellipsis is appended). Descriptions longer than the
+    limit are truncated to ``description_max_length`` characters and an
+    ellipsis ("…") is appended, so the resulting string is
+    ``description_max_length + 1`` characters total.
+
+    Args:
+        cards: Cards to mutate in place.
+        description_max_length: Positive truncation threshold, or ``None`` to
+            skip truncation entirely.
+
+    Raises:
+        ValueError: If ``description_max_length`` is not positive.
+    """
     if description_max_length is None:
         return
+    if description_max_length <= 0:
+        raise ValueError(
+            f"description_max_length must be positive, got {description_max_length}"
+        )
     for card in cards:
         if card.description and len(card.description) > description_max_length:
             card.description = card.description[:description_max_length] + "…"
+
+
+def _apply_board_filters(
+    board: DeckBoard,
+    *,
+    include_acl: bool,
+    include_users: bool,
+    include_labels: bool,
+) -> DeckBoard:
+    """Drop board sub-fields the caller didn't request (in-place)."""
+    if not include_acl:
+        board.acl = []
+    if not include_users:
+        board.users = []
+    if not include_labels:
+        board.labels = []
+    return board
+
+
+def _apply_stack_filters(
+    stack: DeckStack,
+    *,
+    include_cards: bool,
+    include_archived_cards: bool,
+    description_max_length: int | None,
+) -> DeckStack:
+    """Apply card-shaping filters to a single stack (in-place)."""
+    if not include_cards:
+        stack.cards = None
+    elif stack.cards:
+        if not include_archived_cards:
+            stack.cards = [c for c in stack.cards if not c.archived]
+        _truncate_card_descriptions(stack.cards, description_max_length)
+    return stack
+
+
+def _apply_card_filters(
+    cards: list[DeckCard],
+    *,
+    include_archived: bool,
+    description_max_length: int | None,
+) -> list[DeckCard]:
+    """Apply filters to a flat list of cards. Returns a (possibly new) list."""
+    if not include_archived:
+        cards = [c for c in cards if not c.archived]
+    _truncate_card_descriptions(cards, description_max_length)
+    return cards
 
 
 def configure_deck_tools(mcp: FastMCP):
@@ -175,13 +242,12 @@ def configure_deck_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
-        if not include_acl:
-            board.acl = []
-        if not include_users:
-            board.users = []
-        if not include_labels:
-            board.labels = []
-        return board
+        return _apply_board_filters(
+            board,
+            include_acl=include_acl,
+            include_users=include_users,
+            include_labels=include_labels,
+        )
 
     @mcp.tool(
         title="List Deck Stacks",
@@ -212,13 +278,12 @@ def configure_deck_tools(mcp: FastMCP):
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
         for stack in stacks:
-            if not include_cards:
-                stack.cards = None
-                continue
-            if stack.cards:
-                if not include_archived_cards:
-                    stack.cards = [c for c in stack.cards if not c.archived]
-                _truncate_card_descriptions(stack.cards, description_max_length)
+            _apply_stack_filters(
+                stack,
+                include_cards=include_cards,
+                include_archived_cards=include_archived_cards,
+                description_max_length=description_max_length,
+            )
         return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
@@ -248,13 +313,12 @@ def configure_deck_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
-        if not include_cards:
-            stack.cards = None
-        elif stack.cards:
-            if not include_archived_cards:
-                stack.cards = [c for c in stack.cards if not c.archived]
-            _truncate_card_descriptions(stack.cards, description_max_length)
-        return stack
+        return _apply_stack_filters(
+            stack,
+            include_cards=include_cards,
+            include_archived_cards=include_archived_cards,
+            description_max_length=description_max_length,
+        )
 
     @mcp.tool(
         title="List Archived Deck Stacks",
@@ -312,10 +376,11 @@ def configure_deck_tools(mcp: FastMCP):
         """
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
-        cards = stack.cards or []
-        if not include_archived:
-            cards = [c for c in cards if not c.archived]
-        _truncate_card_descriptions(cards, description_max_length)
+        cards = _apply_card_filters(
+            stack.cards or [],
+            include_archived=include_archived,
+            description_max_length=description_max_length,
+        )
         return ListCardsResponse(cards=cards, total=len(cards))
 
     @mcp.tool(
