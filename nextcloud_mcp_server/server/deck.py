@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -31,32 +30,21 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
-def _truncate_card_descriptions(
-    cards: list[DeckCard], description_max_length: int | None
-) -> None:
-    """Truncate each card's description in-place when it strictly exceeds the
-    limit.
-
-    Descriptions whose length is less than or equal to ``description_max_length``
-    are left untouched (no ellipsis is appended). Descriptions longer than the
-    limit are truncated to ``description_max_length`` characters and an
-    ellipsis ("…") is appended, so the resulting string is
-    ``description_max_length + 1`` characters total.
-
-    Args:
-        cards: Cards to mutate in place.
-        description_max_length: Positive truncation threshold, or ``None`` to
-            skip truncation entirely.
-
-    Raises:
-        ValueError: If ``description_max_length`` is not positive.
-    """
-    if description_max_length is None:
-        return
-    if description_max_length <= 0:
+def _validate_description_max_length(description_max_length: int | None) -> None:
+    """Tool-layer guard: reject zero/negative truncation thresholds."""
+    if description_max_length is not None and description_max_length <= 0:
         raise ValueError(
             f"description_max_length must be positive, got {description_max_length}"
         )
+
+
+def _truncate_card_descriptions(
+    cards: list[DeckCard], description_max_length: int | None
+) -> None:
+    """Truncate descriptions strictly longer than the limit; appends "…" so
+    the truncated result is ``description_max_length + 1`` chars."""
+    if description_max_length is None:
+        return
     for card in cards:
         if card.description and len(card.description) > description_max_length:
             card.description = card.description[:description_max_length] + "…"
@@ -87,6 +75,10 @@ def _apply_stack_filters(
     description_max_length: int | None,
 ) -> DeckStack:
     """Apply card-shaping filters to a single stack (in-place)."""
+    # Note: the upstream Deck API returns archived cards inline within
+    # active stacks (the Deck UI filters them frontend-side). Defaulting
+    # include_archived_cards to False mirrors that UI behavior — this is
+    # the breaking change called out in the PR description.
     if not include_cards:
         stack.cards = None
     elif stack.cards:
@@ -99,11 +91,11 @@ def _apply_stack_filters(
 def _apply_card_filters(
     cards: list[DeckCard],
     *,
-    include_archived: bool,
+    include_archived_cards: bool,
     description_max_length: int | None,
 ) -> list[DeckCard]:
     """Apply filters to a flat list of cards. Returns a (possibly new) list."""
-    if not include_archived:
+    if not include_archived_cards:
         cards = [c for c in cards if not c.archived]
     _truncate_card_descriptions(cards, description_max_length)
     return cards
@@ -275,15 +267,18 @@ def configure_deck_tools(mcp: FastMCP):
                 to this many characters. Useful for keeping responses compact
                 on boards with long card specs.
         """
+        _validate_description_max_length(description_max_length)
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
-        for stack in stacks:
+        stacks = [
             _apply_stack_filters(
                 stack,
                 include_cards=include_cards,
                 include_archived_cards=include_archived_cards,
                 description_max_length=description_max_length,
             )
+            for stack in stacks
+        ]
         return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
@@ -311,6 +306,7 @@ def configure_deck_tools(mcp: FastMCP):
             description_max_length: If set, truncate each card's description
                 to this many characters.
         """
+        _validate_description_max_length(description_max_length)
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         return _apply_stack_filters(
@@ -343,11 +339,21 @@ def configure_deck_tools(mcp: FastMCP):
             description_max_length: If set, truncate each card's description
                 to this many characters.
         """
+        _validate_description_max_length(description_max_length)
         client = await get_client(ctx)
         stacks = await client.deck.get_archived_stacks(board_id)
-        for stack in stacks:
-            if stack.cards:
-                _truncate_card_descriptions(stack.cards, description_max_length)
+        # All cards in archived stacks are themselves archived; route through
+        # the same helper as the active-stack path so future filter additions
+        # apply uniformly.
+        stacks = [
+            _apply_stack_filters(
+                stack,
+                include_cards=True,
+                include_archived_cards=True,
+                description_max_length=description_max_length,
+            )
+            for stack in stacks
+        ]
         return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
@@ -360,7 +366,7 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         stack_id: int,
-        include_archived: bool = False,
+        include_archived_cards: bool = False,
         description_max_length: int | None = None,
     ) -> ListCardsResponse:
         """Get all cards in a Nextcloud Deck stack.
@@ -368,17 +374,18 @@ def configure_deck_tools(mcp: FastMCP):
         Args:
             board_id: The ID of the board
             stack_id: The ID of the stack
-            include_archived: Include archived cards (default False). Archived
-                cards can also be retrieved per-board via
+            include_archived_cards: Include archived cards (default False).
+                Archived cards can also be retrieved per-board via
                 deck_get_archived_stacks.
             description_max_length: If set, truncate each card's description
                 to this many characters.
         """
+        _validate_description_max_length(description_max_length)
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         cards = _apply_card_filters(
             stack.cards or [],
-            include_archived=include_archived,
+            include_archived_cards=include_archived_cards,
             description_max_length=description_max_length,
         )
         return ListCardsResponse(cards=cards, total=len(cards))
@@ -475,8 +482,8 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         stack_id: int,
-        title: Optional[str] = None,
-        order: Optional[int] = None,
+        title: str | None = None,
+        order: int | None = None,
     ) -> StackOperationResponse:
         """Update a Nextcloud Deck stack
 
@@ -535,8 +542,8 @@ def configure_deck_tools(mcp: FastMCP):
         title: str,
         type: str = "plain",
         order: int = 999,
-        description: Optional[str] = None,
-        duedate: Optional[str] = None,
+        description: str | None = None,
+        duedate: str | None = None,
     ) -> CreateCardResponse:
         """Create a new card in a Nextcloud Deck stack
 
@@ -571,14 +578,14 @@ def configure_deck_tools(mcp: FastMCP):
         board_id: int,
         stack_id: int,
         card_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        type: Optional[str] = None,
-        owner: Optional[str] = None,
-        order: Optional[int] = None,
-        duedate: Optional[str] = None,
-        archived: Optional[bool] = None,
-        done: Optional[str] = None,
+        title: str | None = None,
+        description: str | None = None,
+        type: str | None = None,
+        owner: str | None = None,
+        order: int | None = None,
+        duedate: str | None = None,
+        archived: bool | None = None,
+        done: str | None = None,
     ) -> CardOperationResponse:
         """Update a Nextcloud Deck card
 
@@ -763,8 +770,8 @@ def configure_deck_tools(mcp: FastMCP):
         ctx: Context,
         board_id: int,
         label_id: int,
-        title: Optional[str] = None,
-        color: Optional[str] = None,
+        title: str | None = None,
+        color: str | None = None,
     ) -> LabelOperationResponse:
         """Update a Nextcloud Deck label
 

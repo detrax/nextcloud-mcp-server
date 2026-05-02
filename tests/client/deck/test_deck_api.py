@@ -283,7 +283,7 @@ async def test_deck_get_archived_stacks(mocker):
     assert stacks[0].id == 9
 
     mock_make_request.assert_called_once()
-    assert "/boards/123/stacks/archived" in mock_make_request.call_args[0][1]
+    assert "/boards/123/stacks/archived" in mock_make_request.call_args.args[1]
 
 
 # Card Tests

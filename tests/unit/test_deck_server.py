@@ -14,6 +14,7 @@ from nextcloud_mcp_server.server.deck import (
     _apply_card_filters,
     _apply_stack_filters,
     _truncate_card_descriptions,
+    _validate_description_max_length,
 )
 
 pytestmark = pytest.mark.unit
@@ -128,18 +129,30 @@ def test_truncate_card_descriptions_shorter_than_limit_no_ellipsis():
     assert cards[0].description == "hello"
 
 
-def test_truncate_card_descriptions_rejects_zero():
-    """A zero limit is invalid (would wipe descriptions to a single ellipsis)."""
-    cards = [_make_card(1, "anything")]
-    with pytest.raises(ValueError, match="must be positive"):
-        _truncate_card_descriptions(cards, 0)
+# _validate_description_max_length ----------------------------------------
 
 
-def test_truncate_card_descriptions_rejects_negative():
-    """Negative limits are invalid."""
-    cards = [_make_card(1, "anything")]
+def test_validate_description_max_length_accepts_none():
+    """None is the documented sentinel for "no truncation"."""
+    _validate_description_max_length(None)
+
+
+def test_validate_description_max_length_accepts_positive():
+    """Positive values pass through silently."""
+    _validate_description_max_length(1)
+    _validate_description_max_length(1000)
+
+
+def test_validate_description_max_length_rejects_zero():
+    """Zero would wipe descriptions to a single ellipsis — reject at the boundary."""
     with pytest.raises(ValueError, match="must be positive"):
-        _truncate_card_descriptions(cards, -10)
+        _validate_description_max_length(0)
+
+
+def test_validate_description_max_length_rejects_negative():
+    """Negative values produce surprising slice semantics — reject at the boundary."""
+    with pytest.raises(ValueError, match="must be positive"):
+        _validate_description_max_length(-10)
 
 
 # _apply_board_filters ------------------------------------------------------
@@ -287,23 +300,23 @@ def test_apply_stack_filters_handles_none_cards():
 
 
 def test_apply_card_filters_excludes_archived_by_default():
-    """include_archived=False filters archived cards out of the flat list."""
+    """include_archived_cards=False filters archived cards out of the flat list."""
     cards = [
         _make_card(1, archived=False),
         _make_card(2, archived=True),
         _make_card(3, archived=False),
     ]
     result = _apply_card_filters(
-        cards, include_archived=False, description_max_length=None
+        cards, include_archived_cards=False, description_max_length=None
     )
     assert [c.id for c in result] == [1, 3]
 
 
 def test_apply_card_filters_keeps_archived_when_requested():
-    """include_archived=True retains archived cards."""
+    """include_archived_cards=True retains archived cards."""
     cards = [_make_card(1, archived=False), _make_card(2, archived=True)]
     result = _apply_card_filters(
-        cards, include_archived=True, description_max_length=None
+        cards, include_archived_cards=True, description_max_length=None
     )
     assert [c.id for c in result] == [1, 2]
 
@@ -312,7 +325,7 @@ def test_apply_card_filters_truncates_descriptions():
     """description_max_length is honored on the returned cards."""
     cards = [_make_card(1, description="x" * 50)]
     result = _apply_card_filters(
-        cards, include_archived=True, description_max_length=10
+        cards, include_archived_cards=True, description_max_length=10
     )
     assert result[0].description is not None
     assert result[0].description.endswith("…")
@@ -320,5 +333,7 @@ def test_apply_card_filters_truncates_descriptions():
 
 def test_apply_card_filters_empty_list_is_noop():
     """An empty input returns an empty output."""
-    result = _apply_card_filters([], include_archived=False, description_max_length=10)
+    result = _apply_card_filters(
+        [], include_archived_cards=False, description_max_length=10
+    )
     assert result == []
