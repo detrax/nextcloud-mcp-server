@@ -641,11 +641,13 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
     # starlette_lifespan). A flat shape is also accepted for tests and
     # historical callers.
     cfg = oauth_ctx.get("config") or oauth_ctx
+    settings = get_settings()
     try:
-        discovery_url = cfg.get("discovery_url") or os.getenv(
-            "OIDC_DISCOVERY_URL",
-            f"{os.getenv('NEXTCLOUD_HOST', '')}/.well-known/openid-configuration",
-        )
+        discovery_url = cfg.get("discovery_url") or settings.oidc_discovery_url
+        if not discovery_url and settings.nextcloud_host:
+            discovery_url = (
+                f"{settings.nextcloud_host}/.well-known/openid-configuration"
+            )
         if not discovery_url:
             return
 
@@ -658,8 +660,8 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
                 logger.debug("IdP advertises no revocation_endpoint; skipping")
                 return
 
-            client_id = cfg.get("client_id") or os.getenv("OIDC_CLIENT_ID")
-            client_secret = cfg.get("client_secret") or os.getenv("OIDC_CLIENT_SECRET")
+            client_id = cfg.get("client_id") or settings.oidc_client_id
+            client_secret = cfg.get("client_secret") or settings.oidc_client_secret
             if not (client_id and client_secret):
                 logger.debug("No OIDC client credentials available for revocation")
                 return
