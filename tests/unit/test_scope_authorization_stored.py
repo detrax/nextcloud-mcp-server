@@ -141,6 +141,9 @@ async def test_decorator_elicits_and_uses_retry_message_when_user_accepts():
             "nextcloud_mcp_server.auth.token_utils.extract_user_id_from_token",
             return_value="alice",
         ),
+        # Patch the elicitation module (not scope_authorization) because the
+        # decorator does a local import of present_provisioning_required to
+        # avoid a circular import, so the name is re-fetched at call-time.
         patch(
             "nextcloud_mcp_server.auth.elicitation.present_provisioning_required",
             elicit_mock,

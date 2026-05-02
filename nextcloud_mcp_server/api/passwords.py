@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nextcloud_mcp_server.api.management import _sanitize_error_for_client
+from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.config import get_settings
 
@@ -305,6 +306,7 @@ async def provision_app_password(request: Request) -> JSONResponse:
         await storage.store_app_password_with_scopes(
             username, app_password, scopes=scopes, username=nc_username
         )
+        invalidate_scope_cache(username)
 
         _record_rate_limit_attempt(path_user_id, success=True)
         logger.info(f"Provisioned app password for user: {username}")

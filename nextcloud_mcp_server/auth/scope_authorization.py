@@ -169,11 +169,16 @@ def require_scopes(*required_scopes: str):
                         # again (which would loop).
                         if elicit_result == "accepted":
                             # Note: stored-scope lookups are cached for
-                            # _SCOPE_CACHE_TTL (5 min). Both nc_auth_provision_access
-                            # and the Astrolabe web route invalidate the cache when
-                            # they finish, but if the LFv2 poller is still in-flight
-                            # at acknowledge-time the next retry can still hit the
-                            # stale cache — hence the "wait a moment" qualifier.
+                            # _SCOPE_CACHE_TTL (5 min). All three provisioning
+                            # paths invalidate the cache on completion: the
+                            # in-tool poller in nc_auth_check_status
+                            # (auth_tools.py), the Astrolabe web route
+                            # (provision_routes.py), and the BasicAuth REST
+                            # endpoint (api/passwords.py). However, if the
+                            # LFv2 poller is still in-flight at acknowledge-
+                            # time the next retry can still hit a not-yet-
+                            # populated entry — hence the "wait a moment"
+                            # qualifier below.
                             error_msg = (
                                 f"Access denied to {func_name}: Nextcloud "
                                 f"access was not provisioned at the time of "

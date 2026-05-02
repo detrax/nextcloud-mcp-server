@@ -25,6 +25,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.api.management import validate_token_and_get_user
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client, rewrite_url_origin
+from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 
@@ -114,6 +115,7 @@ async def _poll_and_store(provision_id: str) -> None:
                 scopes=None,  # All scopes
                 username=result.login_name,
             )
+            invalidate_scope_cache(effective_user_id)
             session = _provision_sessions.get(provision_id)
             if session:
                 session["status"] = "completed"
