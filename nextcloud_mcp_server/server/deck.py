@@ -31,6 +31,17 @@ from nextcloud_mcp_server.observability.metrics import instrument_tool
 logger = logging.getLogger(__name__)
 
 
+def _truncate_card_descriptions(
+    cards: list[DeckCard], description_max_length: int | None
+) -> None:
+    """Truncate each card's description in-place when it exceeds the limit."""
+    if description_max_length is None:
+        return
+    for card in cards:
+        if card.description and len(card.description) > description_max_length:
+            card.description = card.description[:description_max_length] + "…"
+
+
 def configure_deck_tools(mcp: FastMCP):
     """Configure Nextcloud Deck tools and resources for the MCP server."""
 
@@ -143,10 +154,33 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck.read")
     @instrument_tool
-    async def deck_get_board(ctx: Context, board_id: int) -> DeckBoard:
-        """Get details of a specific Nextcloud Deck board"""
+    async def deck_get_board(
+        ctx: Context,
+        board_id: int,
+        include_acl: bool = True,
+        include_users: bool = True,
+        include_labels: bool = True,
+    ) -> DeckBoard:
+        """Get details of a specific Nextcloud Deck board.
+
+        Args:
+            board_id: The ID of the board
+            include_acl: Include the board's ACL entries (default True). Set
+                False to reduce response size when ACLs are not needed.
+            include_users: Include the board's user list (default True). Set
+                False to reduce response size when users are not needed.
+            include_labels: Include the board's label definitions (default
+                True). Set False to reduce response size; labels can still be
+                retrieved via deck_get_labels.
+        """
         client = await get_client(ctx)
         board = await client.deck.get_board(board_id)
+        if not include_acl:
+            board.acl = []
+        if not include_users:
+            board.users = []
+        if not include_labels:
+            board.labels = []
         return board
 
     @mcp.tool(
@@ -155,10 +189,36 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck.read")
     @instrument_tool
-    async def deck_get_stacks(ctx: Context, board_id: int) -> ListStacksResponse:
-        """Get all stacks in a Nextcloud Deck board"""
+    async def deck_get_stacks(
+        ctx: Context,
+        board_id: int,
+        include_cards: bool = True,
+        include_archived_cards: bool = False,
+        description_max_length: int | None = None,
+    ) -> ListStacksResponse:
+        """Get all stacks in a Nextcloud Deck board.
+
+        Args:
+            board_id: The ID of the board
+            include_cards: Include cards inside each stack (default True). Set
+                False for a lightweight stack listing; fetch cards separately
+                via deck_get_cards.
+            include_archived_cards: Include archived cards (default False).
+                Only relevant when include_cards is True.
+            description_max_length: If set, truncate each card's description
+                to this many characters. Useful for keeping responses compact
+                on boards with long card specs.
+        """
         client = await get_client(ctx)
         stacks = await client.deck.get_stacks(board_id)
+        for stack in stacks:
+            if not include_cards:
+                stack.cards = None
+                continue
+            if stack.cards:
+                if not include_archived_cards:
+                    stack.cards = [c for c in stack.cards if not c.archived]
+                _truncate_card_descriptions(stack.cards, description_max_length)
         return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
@@ -167,11 +227,64 @@ def configure_deck_tools(mcp: FastMCP):
     )
     @require_scopes("deck.read")
     @instrument_tool
-    async def deck_get_stack(ctx: Context, board_id: int, stack_id: int) -> DeckStack:
-        """Get details of a specific Nextcloud Deck stack"""
+    async def deck_get_stack(
+        ctx: Context,
+        board_id: int,
+        stack_id: int,
+        include_cards: bool = True,
+        include_archived_cards: bool = False,
+        description_max_length: int | None = None,
+    ) -> DeckStack:
+        """Get details of a specific Nextcloud Deck stack.
+
+        Args:
+            board_id: The ID of the board
+            stack_id: The ID of the stack
+            include_cards: Include cards in the stack (default True).
+            include_archived_cards: Include archived cards (default False).
+                Only relevant when include_cards is True.
+            description_max_length: If set, truncate each card's description
+                to this many characters.
+        """
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
+        if not include_cards:
+            stack.cards = None
+        elif stack.cards:
+            if not include_archived_cards:
+                stack.cards = [c for c in stack.cards if not c.archived]
+            _truncate_card_descriptions(stack.cards, description_max_length)
         return stack
+
+    @mcp.tool(
+        title="List Archived Deck Stacks",
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+    )
+    @require_scopes("deck.read")
+    @instrument_tool
+    async def deck_get_archived_stacks(
+        ctx: Context,
+        board_id: int,
+        description_max_length: int | None = None,
+    ) -> ListStacksResponse:
+        """List archived stacks (with their archived cards) for a Nextcloud
+        Deck board.
+
+        Use this to audit completed work that has been archived off the
+        active board (e.g. cards moved through a "Done" stack and then
+        archived via deck_archive_card). The shape mirrors deck_get_stacks.
+
+        Args:
+            board_id: The ID of the board
+            description_max_length: If set, truncate each card's description
+                to this many characters.
+        """
+        client = await get_client(ctx)
+        stacks = await client.deck.get_archived_stacks(board_id)
+        for stack in stacks:
+            if stack.cards:
+                _truncate_card_descriptions(stack.cards, description_max_length)
+        return ListStacksResponse(stacks=stacks, total=len(stacks))
 
     @mcp.tool(
         title="List Deck Cards",
@@ -180,12 +293,29 @@ def configure_deck_tools(mcp: FastMCP):
     @require_scopes("deck.read")
     @instrument_tool
     async def deck_get_cards(
-        ctx: Context, board_id: int, stack_id: int
+        ctx: Context,
+        board_id: int,
+        stack_id: int,
+        include_archived: bool = False,
+        description_max_length: int | None = None,
     ) -> ListCardsResponse:
-        """Get all cards in a Nextcloud Deck stack"""
+        """Get all cards in a Nextcloud Deck stack.
+
+        Args:
+            board_id: The ID of the board
+            stack_id: The ID of the stack
+            include_archived: Include archived cards (default False). Archived
+                cards can also be retrieved per-board via
+                deck_get_archived_stacks.
+            description_max_length: If set, truncate each card's description
+                to this many characters.
+        """
         client = await get_client(ctx)
         stack = await client.deck.get_stack(board_id, stack_id)
         cards = stack.cards or []
+        if not include_archived:
+            cards = [c for c in cards if not c.archived]
+        _truncate_card_descriptions(cards, description_max_length)
         return ListCardsResponse(cards=cards, total=len(cards))
 
     @mcp.tool(
