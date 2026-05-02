@@ -92,7 +92,7 @@ class ASProxySession:
     code_challenge: str
     code_challenge_method: str
     requested_scopes: str
-    nonce: str = ""
+    nonce: str
     created_at: float = field(default_factory=time.time)
     expires_at: float = field(default_factory=lambda: time.time() + 600)
 
@@ -959,9 +959,10 @@ async def _oauth_callback_as_proxy(
     # verification done in oauth_callback_nextcloud.
     #
     # ``expected_nonce`` is the per-request nonce we forwarded to the IdP
-    # in oauth_authorize (PR #758 round-2 finding 2); falsy → skip nonce
-    # check for backward compatibility with sessions stored before the
-    # nonce field was added.
+    # in oauth_authorize (PR #758 round-2 finding 2). ASProxySession is
+    # in-memory only and ``nonce`` is now a required field, so for any
+    # session created via the current code path this is always set; the
+    # ``or None`` is defence-in-depth and a no-op in practice.
     id_token = nc_token_response.get("id_token")
     try:
         await verify_id_token(

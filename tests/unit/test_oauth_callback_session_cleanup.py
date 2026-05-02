@@ -218,6 +218,7 @@ async def test_as_proxy_rejects_invalid_id_token():
         code_challenge="challenge",
         code_challenge_method="S256",
         requested_scopes="openid",
+        nonce="nonce-rejected",
     )
     _proxy_codes.clear()
 

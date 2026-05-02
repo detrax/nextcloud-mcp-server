@@ -8,6 +8,7 @@ import logging
 import time
 from typing import Any
 
+import anyio
 import jwt
 from jwt import PyJWKSet
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -30,6 +31,23 @@ _discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _OIDC_CACHE_TTL = 300
 
+# Per-URL fetch locks coalesce concurrent cache misses into a single HTTP
+# request, preventing thundering-herd against the IdP at cache expiry
+# (PR #758 round-3 review). Mirrors the lock-dict + meta-lock idiom from
+# token_broker.py.
+_fetch_locks: dict[str, anyio.Lock] = {}
+_fetch_locks_lock = anyio.Lock()
+
+
+async def _get_fetch_lock(url: str) -> anyio.Lock:
+    """Return the per-URL lock used to serialise cache-miss fetches."""
+    async with _fetch_locks_lock:
+        lock = _fetch_locks.get(url)
+        if lock is None:
+            lock = anyio.Lock()
+            _fetch_locks[url] = lock
+        return lock
+
 
 class IdTokenVerificationError(Exception):
     """Raised when an OIDC ID token fails signature or claim verification."""
@@ -48,19 +66,29 @@ async def _get_cached(
     ``/.well-known/openid-configuration`` path issues a 301), but JWKS
     fetches deliberately stay strict — the URL came from the discovery
     document we already trust, so a redirect there would be suspicious.
+
+    Concurrent callers seeing the same cache miss are coalesced via a
+    per-URL ``anyio.Lock``: only one fetch runs, the rest wait and read the
+    populated cache.
     """
-    now = time.time()
     entry = cache.get(url)
-    if entry is not None:
-        expires_at, data = entry
-        if now < expires_at:
-            return data
-    async with nextcloud_httpx_client(follow_redirects=follow_redirects) as http_client:
-        response = await http_client.get(url)
-        response.raise_for_status()
-        data = response.json()
-    cache[url] = (now + _OIDC_CACHE_TTL, data)
-    return data
+    if entry is not None and time.time() < entry[0]:
+        return entry[1]
+    lock = await _get_fetch_lock(url)
+    async with lock:
+        # Re-check inside the lock — a concurrent waiter may have already
+        # populated the cache before we acquired it.
+        entry = cache.get(url)
+        if entry is not None and time.time() < entry[0]:
+            return entry[1]
+        async with nextcloud_httpx_client(
+            follow_redirects=follow_redirects
+        ) as http_client:
+            response = await http_client.get(url)
+            response.raise_for_status()
+            data = response.json()
+        cache[url] = (time.time() + _OIDC_CACHE_TTL, data)
+        return data
 
 
 async def get_oidc_discovery(discovery_url: str) -> dict[str, Any]:
@@ -78,7 +106,7 @@ async def get_oidc_discovery(discovery_url: str) -> dict[str, Any]:
 
 
 async def verify_id_token(
-    id_token: str,
+    id_token: str | None,
     *,
     discovery_url: str,
     expected_audience: str,
@@ -240,7 +268,8 @@ async def extract_user_id_from_token(_ctx: Context) -> str:
         )
         raise McpError(
             ErrorData(
-                code=-1,
+                # JSON-RPC 2.0 reserves -32000..-32099 for application errors.
+                code=-32001,
                 message="Cannot determine user identity from access token",
             )
         )

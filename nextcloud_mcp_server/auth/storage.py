@@ -1220,23 +1220,22 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # SELECT the row before DELETE so we can attribute the audit log
-        # entry to the right user (PR #758 round-3 nit 5).
+        # DELETE ... RETURNING (SQLite ≥ 3.35) reads ``user_id`` atomically
+        # with the delete itself, so the audit log can't race against a
+        # concurrent delete that empties the row between SELECT and DELETE
+        # (PR #758 round-3 review).
+        user_id: str | None = None
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT user_id FROM browser_sessions WHERE session_id = ?",
+                "DELETE FROM browser_sessions WHERE session_id = ? RETURNING user_id",
                 (session_id,),
             ) as cursor:
                 row = await cursor.fetchone()
-            user_id = row[0] if row else None
-
-            cursor = await db.execute(
-                "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
-            )
             await db.commit()
-            deleted = cursor.rowcount > 0
 
+        deleted = row is not None
         if deleted:
+            user_id = row[0]
             logger.debug("Deleted browser session %s", session_id[:8])
             if user_id:
                 await self._audit_log(

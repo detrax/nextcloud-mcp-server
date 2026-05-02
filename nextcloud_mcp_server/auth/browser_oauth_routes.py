@@ -54,7 +54,8 @@ def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
     """Return True when Origin/Referer is missing or matches our own host.
 
     Used to gate POST /oauth/logout against cross-origin form submissions
-    (PR #758 finding 5). Per OWASP CSRF cheat sheet, the policy is:
+    (PR #758 round-3 review hardening). Per OWASP CSRF cheat sheet, the
+    policy is:
       - If neither Origin nor Referer is set, allow (same-origin POST in
         privacy-conscious browsers may strip both).
       - Otherwise, the (scheme, hostname, port) tuple of the first present
@@ -640,9 +641,9 @@ async def oauth_logout(request: Request) -> RedirectResponse | JSONResponse:
       5. Clears the cookie on the response.
 
     Method is POST-only at the route layer to defeat passive CSRF (PR #758
-    finding 5). Origin / Referer headers are also validated against the
-    configured ``mcp_server_url`` when present, blocking same-method-but-
-    cross-origin form submissions.
+    round-3 review hardening). Origin / Referer headers are also validated
+    against the configured ``mcp_server_url`` when present, blocking
+    same-method-but-cross-origin form submissions.
 
     Query parameters:
         next: Optional URL to redirect to after logout (default: /oauth/login)

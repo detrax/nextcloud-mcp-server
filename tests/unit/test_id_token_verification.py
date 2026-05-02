@@ -12,6 +12,7 @@ import time
 from base64 import urlsafe_b64encode
 from unittest.mock import patch
 
+import anyio
 import httpx
 import jwt
 import pytest
@@ -32,9 +33,11 @@ def _clear_oidc_caches():
     """Reset the discovery+JWKS caches so tests don't share fetched data."""
     token_utils._discovery_cache.clear()
     token_utils._jwks_cache.clear()
+    token_utils._fetch_locks.clear()
     yield
     token_utils._discovery_cache.clear()
     token_utils._jwks_cache.clear()
+    token_utils._fetch_locks.clear()
 
 
 # Generated once per process — RSA keypair generation is slow.
@@ -478,3 +481,50 @@ async def test_verify_id_token_caches_discovery_and_jwks():
 
     assert fetches.get(DISCOVERY_URL) == 1, "discovery fetched more than once"
     assert fetches.get(JWKS_URI) == 1, "JWKS fetched more than once"
+
+
+async def test_get_cached_coalesces_concurrent_misses():
+    """Concurrent cache misses must collapse into a single HTTP fetch.
+
+    PR #758 round-3 review: without the per-URL lock in ``_get_cached``,
+    N simultaneous callers at cache expiry would each fire their own
+    request to the IdP, potentially tripping rate limits. The async
+    handler yields with ``anyio.sleep(0.01)`` so all 10 callers reach
+    the cache-miss branch concurrently — without coalescing the count
+    would be 10.
+    """
+    fetch_count = {"n": 0}
+
+    async def slow_handler(request: httpx.Request) -> httpx.Response:
+        fetch_count["n"] += 1
+        # Yield so concurrent waiters all reach the lock acquisition
+        # while the first holder is still mid-fetch.
+        await anyio.sleep(0.01)
+        return _idp_handler(request)
+
+    transport = httpx.MockTransport(slow_handler)
+
+    def fake_client(**kwargs):
+        kwargs["transport"] = transport
+        return httpx.AsyncClient(**kwargs)
+
+    results: list[dict] = []
+
+    async def fetch_once():
+        results.append(await token_utils._get_cached(token_utils._jwks_cache, JWKS_URI))
+
+    with patch(
+        "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
+        side_effect=fake_client,
+    ):
+        async with anyio.create_task_group() as tg:
+            for _ in range(10):
+                tg.start_soon(fetch_once)
+
+    assert fetch_count["n"] == 1, (
+        f"expected exactly one fetch via lock coalescing, got {fetch_count['n']}"
+    )
+    assert len(results) == 10
+    assert all(r == results[0] for r in results), (
+        "concurrent callers received divergent cached data"
+    )
