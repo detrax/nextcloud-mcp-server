@@ -5,19 +5,20 @@ when the client supports it, or falling back to returning the URL in a message.
 """
 
 import logging
-import os
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
+from nextcloud_mcp_server.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 # Path of the Astrolabe Nextcloud app's settings UI. The full URL is
-# reconstructed at elicitation time from NEXTCLOUD_PUBLIC_ISSUER_URL /
-# NEXTCLOUD_HOST so the user gets a browser-reachable link without needing a
-# separate config knob. If the Astrolabe app is not installed this path will
-# 404, and the user falls back to the nc_auth_provision_access tool path
-# mentioned in the same message.
+# reconstructed at elicitation time from settings.nextcloud_public_issuer_url
+# / settings.nextcloud_host so the user gets a browser-reachable link without
+# needing a separate config knob. If the Astrolabe app is not installed this
+# path will 404, and the user falls back to the nc_auth_provision_access tool
+# path mentioned in the same message.
 ASTROLABE_SETTINGS_PATH = "/index.php/apps/astrolabe/settings"
 
 
@@ -40,14 +41,15 @@ class ProvisioningRequiredConfirmation(BaseModel):
 
 
 def _astrolabe_settings_url() -> str | None:
-    """Construct the Astrolabe settings page URL from environment.
+    """Construct the Astrolabe settings page URL from settings.
 
-    Prefers ``NEXTCLOUD_PUBLIC_ISSUER_URL`` (the browser-reachable public URL)
-    over ``NEXTCLOUD_HOST`` (which may be an internal hostname in Docker
+    Prefers ``nextcloud_public_issuer_url`` (the browser-reachable public URL)
+    over ``nextcloud_host`` (which may be an internal hostname in Docker
     deployments). Returns None if neither is set.
     """
+    settings = get_settings()
     base = (
-        os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or os.getenv("NEXTCLOUD_HOST") or ""
+        settings.nextcloud_public_issuer_url or settings.nextcloud_host or ""
     ).strip()
     if not base:
         return None
@@ -132,9 +134,10 @@ async def present_provisioning_required(ctx: Context) -> str:
     has to translate.
 
     The Astrolabe settings URL is reconstructed from
-    ``NEXTCLOUD_PUBLIC_ISSUER_URL`` / ``NEXTCLOUD_HOST``; if Astrolabe is not
-    installed the link 404s and the user falls back to the tool path
-    suggested in the same message.
+    ``settings.nextcloud_public_issuer_url`` /
+    ``settings.nextcloud_host``; if Astrolabe is not installed the link
+    404s and the user falls back to the tool path suggested in the same
+    message.
 
     Returns:
         Same string contract as :func:`present_login_url`:
@@ -148,7 +151,7 @@ async def present_provisioning_required(ctx: Context) -> str:
             f"Open this URL to enable it via the Astrolabe app:\n\n{settings_url}\n\n"
             "If the Astrolabe app is not installed, ask your MCP client to call "
             "the `nc_auth_provision_access` tool instead — it will return a "
-            "Login Flow v2 URL you can open directly.\n\n"
+            "Login Flow v2 URL you can open in your browser.\n\n"
             "Then check the box below and retry the original request."
         )
     else:

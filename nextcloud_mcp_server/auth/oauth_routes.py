@@ -360,7 +360,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Replace internal Docker hostname with public URL for browser access
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    public_issuer = get_settings().nextcloud_public_issuer_url
     if public_issuer:
         internal_parsed = parse_url(oauth_config["nextcloud_host"])
         auth_parsed = parse_url(authorization_endpoint)
@@ -507,7 +507,7 @@ async def oauth_authorize_nextcloud(
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Fix internal hostname for browser access
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    public_issuer = get_settings().nextcloud_public_issuer_url
     if public_issuer:
         internal_parsed = parse_url(oauth_config["nextcloud_host"])
         auth_parsed = parse_url(authorization_endpoint)

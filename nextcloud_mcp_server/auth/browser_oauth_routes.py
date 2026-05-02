@@ -22,6 +22,7 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     _get_userinfo_endpoint,
     _query_idp_userinfo,
 )
+from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -167,7 +168,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             scopes += " offline_access"
 
         # Replace internal Docker hostname with public URL
-        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+        public_issuer = get_settings().nextcloud_public_issuer_url
         if public_issuer:
             internal_parsed = parse_url(oauth_config["nextcloud_host"])
             auth_parsed = parse_url(authorization_endpoint)

@@ -15,7 +15,6 @@ Flow:
 
 import html
 import logging
-import os
 import secrets
 import time
 from urllib.parse import urlparse
@@ -251,7 +250,7 @@ async def provision_page(
     # LoginFlowV2Client) while login_url is rewritten to the public issuer
     # URL here because the browser needs a publicly-reachable address.
     login_url = init_response.login_url
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "")
+    public_issuer = settings.nextcloud_public_issuer_url or ""
     if public_issuer and nextcloud_host:
         login_url = rewrite_url_origin(login_url, public_issuer.rstrip("/"))
 

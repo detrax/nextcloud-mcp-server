@@ -196,6 +196,89 @@ async def test_decorator_uses_legacy_message_when_elicitation_unsupported():
     assert "retry the request" not in msg
 
 
+async def test_decorator_uses_legacy_message_when_user_declines():
+    """When the elicit returns "declined" the user has explicitly declined the
+    provisioning prompt. They still need to provision before the tool can run,
+    so the raised error keeps the "call nc_auth_provision_access" instruction
+    (same fall-through branch as message_only). Lock in this behaviour so a
+    future refactor that splits the else-branch can't silently change it."""
+    ctx = _make_login_flow_ctx()
+
+    @require_scopes("notes.read")
+    async def fake_tool_user_declined(ctx: Context):  # noqa: ARG001
+        return "ok"
+
+    fake_settings = SimpleNamespace(enable_login_flow=True)
+    elicit_mock = AsyncMock(return_value="declined")
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+            return_value=fake_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization._get_stored_scopes",
+            return_value=None,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.extract_user_id_from_token",
+            return_value="alice",
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.elicitation.present_provisioning_required",
+            elicit_mock,
+        ),
+        pytest.raises(ProvisioningRequiredError) as exc_info,
+    ):
+        await fake_tool_user_declined(ctx=ctx)
+
+    elicit_mock.assert_awaited_once_with(ctx)
+    msg = str(exc_info.value)
+    assert "nc_auth_provision_access" in msg
+    assert "retry the request" not in msg
+
+
+async def test_decorator_uses_legacy_message_when_user_cancels():
+    """When the elicit returns "cancelled" (user dismissed the prompt without
+    answering), the user is still unprovisioned and needs to call the auth
+    tool. Same fall-through as declined and message_only — locked in by an
+    explicit test so the three callers don't drift apart in a future refactor."""
+    ctx = _make_login_flow_ctx()
+
+    @require_scopes("notes.read")
+    async def fake_tool_user_cancelled(ctx: Context):  # noqa: ARG001
+        return "ok"
+
+    fake_settings = SimpleNamespace(enable_login_flow=True)
+    elicit_mock = AsyncMock(return_value="cancelled")
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+            return_value=fake_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization._get_stored_scopes",
+            return_value=None,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.extract_user_id_from_token",
+            return_value="alice",
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.elicitation.present_provisioning_required",
+            elicit_mock,
+        ),
+        pytest.raises(ProvisioningRequiredError) as exc_info,
+    ):
+        await fake_tool_user_cancelled(ctx=ctx)
+
+    elicit_mock.assert_awaited_once_with(ctx)
+    msg = str(exc_info.value)
+    assert "nc_auth_provision_access" in msg
+    assert "retry the request" not in msg
+
+
 async def test_decorator_does_not_elicit_when_scopes_only_partially_missing():
     """When the user *has* an app password but is missing some requested
     scopes, the decorator raises InsufficientScopeError (step-up auth),

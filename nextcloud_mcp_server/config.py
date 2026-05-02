@@ -31,6 +31,7 @@ _DEFAULTS: dict[str, Any] = {
     "nextcloud_ca_bundle": None,
     "nextcloud_mcp_server_url": None,
     "nextcloud_resource_uri": None,
+    "nextcloud_public_issuer_url": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
     "nextcloud_oidc_client_id": None,
@@ -406,6 +407,11 @@ class Settings:
     nextcloud_password: str | None = None
     nextcloud_app_password: str | None = None  # Preferred over nextcloud_password
 
+    # Browser-reachable public URL for OAuth/Login-Flow-v2 redirects when
+    # NEXTCLOUD_HOST is an internal Docker hostname. Falls back to
+    # nextcloud_host when unset.
+    nextcloud_public_issuer_url: str | None = None
+
     # Nextcloud SSL/TLS settings
     nextcloud_verify_ssl: bool = True
     nextcloud_ca_bundle: str | None = None
@@ -777,6 +783,7 @@ def get_settings() -> Settings:
         "nextcloud_username": "NEXTCLOUD_USERNAME",
         "nextcloud_password": "NEXTCLOUD_PASSWORD",
         "nextcloud_app_password": "NEXTCLOUD_APP_PASSWORD",
+        "nextcloud_public_issuer_url": "NEXTCLOUD_PUBLIC_ISSUER_URL",
         # Nextcloud SSL/TLS settings
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
         "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
