@@ -38,7 +38,7 @@ judgment.
 **Skip when:**
 - Tiny diffs (typo fix, README tweak, dependency bump only).
 - User has explicitly said "just push it" / "skip the review".
-- Branch is `master` or has zero commits ahead of base.
+- Branch is `master`, or has zero commits ahead of base **and** a clean working tree (`git status --short` empty).
 
 ## Workflow
 
@@ -50,9 +50,15 @@ Determine the base branch and diff range. Default base is `master`.
 git fetch origin master --quiet
 BASE=$(git merge-base HEAD origin/master)
 git rev-list --count $BASE..HEAD                     # commits ahead
-git diff --stat $BASE..HEAD                          # files touched
+git diff --stat $BASE                                # files touched (incl. staged + unstaged)
 git log --format="%h %s" $BASE..HEAD                 # commit list
+git status --short                                   # surface uncommitted state
 ```
+
+**Diff scope:** the review uses `git diff $BASE` (base → working tree), which includes
+committed + staged + unstaged changes. This means in-progress work is reviewed too —
+flag any findings against half-written code as such, and don't penalize obvious WIP
+(missing tests, TODO stubs) the user clearly hasn't finished yet.
 
 If the user names a different base (e.g. `main`, a stacked branch), use that instead.
 
@@ -95,8 +101,8 @@ broken build — fixing the failures may eliminate findings or change the diff.
 ### Phase 3 — Read the diff and run the project checklist (2–5min)
 
 ```bash
-git diff $BASE..HEAD                                                  # full diff
-git diff $BASE..HEAD -- '*.py' | head -2000                          # python only, capped
+git diff $BASE                                                        # full diff (incl. uncommitted)
+git diff $BASE -- '*.py' | head -2000                                # python only, capped
 ```
 
 Read the **whole diff** before composing findings. Cross-file patterns (test symmetry,
