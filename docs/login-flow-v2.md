@@ -72,6 +72,75 @@ NEXTCLOUD_PUBLIC_ISSUER_URL=https://your.nextcloud.example.com  # Public URL of 
 
 When using an external IdP (Keycloak, Cognito, etc.), see [Keycloak Multi-Client Token Validation](keycloak-multi-client-validation.md) for how Nextcloud's `user_oidc` app handles realm-level token validation if you also federate Nextcloud's own login through the same IdP.
 
+### External IdP setup (Authentik / Keycloak / Cognito)
+
+When `OIDC_DISCOVERY_URL` points at a third-party IdP rather than Nextcloud's own
+OIDC, three things have to line up — and most setup confusion (e.g.
+[#752](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/752)) comes from
+mismatches across them.
+
+#### Nextcloud apps to install
+
+| App | When to install | Notes |
+|---|---|---|
+| `user_oidc` | **Required** if your external IdP also issues identities used by Nextcloud (i.e. you want SSO into Nextcloud through the same IdP). | Validates incoming Bearer tokens at the **realm** level — see [keycloak-multi-client-validation.md](keycloak-multi-client-validation.md). |
+| `oidc` (Nextcloud-as-IdP) | **Skip.** | Only relevant when Nextcloud itself is the IdP. With an external IdP, `OIDC_DISCOVERY_URL` already points elsewhere. |
+| `astrolabe` | **Optional.** | Provides a per-user "Enable Semantic Search" settings page that triggers Login Flow v2 from the Nextcloud UI. Without it, users provision via the `nc_auth_provision_access` MCP tool (which uses MCP elicitation for clients that support it). |
+
+#### OIDC clients to register in your IdP
+
+| Client | Required? | What it represents |
+|---|---|---|
+| **MCP server** | Yes | The MCP server's RP relationship with the IdP. Configured via `NEXTCLOUD_OIDC_CLIENT_ID` / `NEXTCLOUD_OIDC_CLIENT_SECRET`. Used for OIDC discovery, JWKS retrieval, and token validation. |
+| **Astrolabe** | Only if Astrolabe is installed | Used by the Astrolabe Nextcloud app for its own per-user OAuth flow against the MCP server. |
+| **MCP client** (e.g. Claude.ai, Claude Code) | Optional | The MCP server supports RFC 7591 Dynamic Client Registration, so MCP clients are auto-registered on first connect. Only register a static client if your IdP rejects DCR-issued clients or your MCP client cannot do DCR (see [#752 thread](https://github.com/cbcoutinho/nextcloud-mcp-server/issues/752#issuecomment-4362197279) for the Claude Code workarounds). When pre-allowlisting static MCP clients, set `ALLOWED_MCP_CLIENTS` — see [`auth/client_registry.py`](../nextcloud_mcp_server/auth/client_registry.py) for the format. |
+
+#### Scopes the IdP must advertise on the MCP-server client
+
+Standard OIDC scopes (`openid`, `profile`, `email`) are not enough on their own —
+the MCP server gates every Nextcloud-touching tool on a per-app scope (e.g.
+`notes.read`, `calendar.write`). Those scopes must be issuable by the IdP on the
+MCP-server client, otherwise the client's tokens won't carry them and tool calls
+will be filtered out at `list_tools` time.
+
+The authoritative list is served at:
+
+```
+GET https://<your-mcp-server>/.well-known/oauth-protected-resource/mcp
+```
+
+…in the `scopes_supported` field. In Authentik and Keycloak, register each scope
+as a custom scope and expose it as a claim/scope mapping on the MCP-server
+client. Add `offline_access` if you want refresh tokens for background sync.
+
+If you also want resource-prefixed scopes (e.g. AWS Cognito's
+`https://mcp.example.com/notes.read`), set `OIDC_RESOURCE_SERVER_ID` so the MCP
+server strips the prefix before matching against `@require_scopes` decorators.
+See `_strip_resource_prefix` in [`scope_authorization.py`](../nextcloud_mcp_server/auth/scope_authorization.py).
+
+#### Diagnosing "OAuth succeeded but Nextcloud returns 401"
+
+This is the most common failure mode after wiring up an external IdP, and it
+trips up first-time setups. The two legs are independent:
+
+```
+MCP client ──── OAuth/OIDC ────> MCP server ──── Basic Auth ────> Nextcloud
+            (auth leg, validated)             (data leg, app password)
+```
+
+If a tool call returns `401 Unauthorized` from a Nextcloud URL after OAuth
+succeeded, the **data leg** has no credentials yet — the user hasn't completed
+Login Flow v2 to provision an app password for that account. Fix it by calling
+`nc_auth_provision_access` from the MCP client (or visiting the Astrolabe
+settings page if installed). Subsequent tool calls reuse the stored app
+password.
+
+When the MCP client supports MCP elicitation (spec 2025-11-25), the server now
+elicits a clickable Astrolabe settings URL automatically on the first failing
+tool call, so the user has somewhere to click instead of just an error string.
+Clients without elicitation support fall back to the existing
+`ProvisioningRequiredError` text message.
+
 ### Generating an Encryption Key
 
 App passwords are stored encrypted with Fernet. Generate a key once and reuse it:
