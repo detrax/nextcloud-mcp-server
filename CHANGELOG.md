@@ -5,6 +5,23 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.78.0 (2026-05-02)
+
+### Feat
+
+- **auth**: elicit Astrolabe URL on missing app password
+
+### Fix
+
+- **auth**: address PR #757 round-3 review feedback
+- **auth**: invalidate scope cache on web/REST provisioning paths
+- **auth**: address PR #757 round-2 review feedback
+- **auth**: address PR #757 review feedback
+
+### Refactor
+
+- **config**: consolidate NEXTCLOUD_PUBLIC_ISSUER_URL through Settings
+
 ## v0.77.1 (2026-05-01)
 
 ### Fix
