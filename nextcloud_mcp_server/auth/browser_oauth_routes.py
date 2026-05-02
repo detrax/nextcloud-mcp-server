@@ -6,7 +6,6 @@ for accessing admin UI endpoints like /app.
 
 import hashlib
 import logging
-import os
 import secrets
 import time
 from base64 import urlsafe_b64encode
@@ -26,6 +25,7 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     _get_userinfo_endpoint,
     _query_idp_userinfo,
 )
+from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
 
@@ -75,22 +75,21 @@ def _safe_next_url(raw: str | None, default: str) -> str:
 
 
 def _should_use_secure_cookies() -> bool:
-    """Determine if cookies should have secure flag.
+    """Determine if cookies should have the Secure flag.
 
-    Checks COOKIE_SECURE env var first, then auto-detects from NEXTCLOUD_HOST.
+    Reads ``settings.cookie_secure`` first (set via the ``COOKIE_SECURE``
+    env var). Falls back to auto-detect from the ``nextcloud_host`` scheme
+    when unset.
 
     Returns:
         True if cookies should be secure (HTTPS), False otherwise
     """
-    # Explicit configuration takes precedence
-    explicit = os.getenv("COOKIE_SECURE", "").lower()
-    if explicit == "true":
-        return True
-    if explicit == "false":
-        return False
-
-    # Auto-detect from NEXTCLOUD_HOST protocol
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "")
+    settings = get_settings()
+    if settings.cookie_secure is not None:
+        # Dynaconf auto-coerces "true"/"false" → bool but "1"/"0" → int;
+        # bool() normalises both.
+        return bool(settings.cookie_secure)
+    nextcloud_host = settings.nextcloud_host or ""
     return nextcloud_host.startswith("https://")
 
 
@@ -216,7 +215,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             scopes += " offline_access"
 
         # Replace internal Docker hostname with public URL
-        public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+        public_issuer = get_settings().nextcloud_public_issuer_url
         if public_issuer:
             internal_parsed = parse_url(oauth_config["nextcloud_host"])
             auth_parsed = parse_url(authorization_endpoint)

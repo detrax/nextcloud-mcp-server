@@ -474,7 +474,7 @@ async def user_info_html(request: Request) -> HTMLResponse:
     # otherwise fall back to NEXTCLOUD_HOST from settings
     settings = get_settings()
     nextcloud_host_for_links = (
-        os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or settings.nextcloud_host
+        settings.nextcloud_public_issuer_url or settings.nextcloud_host
     )
 
     # Build host info HTML (BasicAuth only)
