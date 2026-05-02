@@ -57,7 +57,7 @@ def _apply_board_filters(
     include_users: bool,
     include_labels: bool,
 ) -> DeckBoard:
-    """Drop board sub-fields the caller didn't request (in-place)."""
+    """Drop board sub-fields the caller didn't request; returns the board."""
     if not include_acl:
         board.acl = []
     if not include_users:
@@ -74,7 +74,7 @@ def _apply_stack_filters(
     include_archived_cards: bool,
     description_max_length: int | None,
 ) -> DeckStack:
-    """Apply card-shaping filters to a single stack (in-place)."""
+    """Apply card-shaping filters to a single stack; returns the stack."""
     # Note: the upstream Deck API returns archived cards inline within
     # active stacks (the Deck UI filters them frontend-side). Defaulting
     # include_archived_cards to False mirrors that UI behavior — this is
@@ -94,7 +94,7 @@ def _apply_card_filters(
     include_archived_cards: bool,
     description_max_length: int | None,
 ) -> list[DeckCard]:
-    """Apply filters to a flat list of cards. Returns a (possibly new) list."""
+    """Apply filters to a flat list of cards; returns the (possibly new) list."""
     if not include_archived_cards:
         cards = [c for c in cards if not c.archived]
     _truncate_card_descriptions(cards, description_max_length)
@@ -334,6 +334,10 @@ def configure_deck_tools(mcp: FastMCP):
         active board (e.g. cards moved through a "Done" stack and then
         archived via deck_archive_card). The shape mirrors deck_get_stacks.
 
+        Cards are always included on the returned stacks (an archived stack
+        without its cards would have no audit value); pass
+        ``description_max_length`` if you need to keep the response compact.
+
         Args:
             board_id: The ID of the board
             description_max_length: If set, truncate each card's description
@@ -370,6 +374,12 @@ def configure_deck_tools(mcp: FastMCP):
         description_max_length: int | None = None,
     ) -> ListCardsResponse:
         """Get all cards in a Nextcloud Deck stack.
+
+        Filtering is applied client-side after the API returns the full
+        stack, so ``include_archived_cards=False`` and
+        ``description_max_length`` reduce response size visible to the
+        caller but not network bandwidth — network-wise this tool is
+        equivalent to deck_get_stack(include_cards=True).
 
         Args:
             board_id: The ID of the board

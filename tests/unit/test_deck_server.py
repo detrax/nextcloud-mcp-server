@@ -122,6 +122,15 @@ def test_truncate_card_descriptions_at_exact_boundary():
     assert cards[0].description == "x" * 100
 
 
+def test_truncate_card_descriptions_one_over_limit():
+    """A description one character over the limit triggers truncation."""
+    cards = [_make_card(1, "x" * 101)]
+    _truncate_card_descriptions(cards, 100)
+    assert cards[0].description is not None
+    assert len(cards[0].description) == 101  # 100 chars + ellipsis
+    assert cards[0].description.endswith("…")
+
+
 def test_truncate_card_descriptions_shorter_than_limit_no_ellipsis():
     """A description shorter than the limit must not have an ellipsis appended."""
     cards = [_make_card(1, "hello")]
@@ -294,6 +303,28 @@ def test_apply_stack_filters_handles_none_cards():
         description_max_length=10,
     )
     assert result.cards is None
+
+
+def test_apply_stack_filters_all_archived_yields_empty_list_not_none():
+    """A stack whose cards are all archived yields cards == [], not None.
+
+    Pin the contract: include_cards=True with all cards filtered out
+    means "the stack was loaded but had nothing to show", which is
+    semantically distinct from include_cards=False (cards=None,
+    "explicitly suppressed"). Callers checking ``stack.cards is None``
+    can use that to distinguish the two states.
+    """
+    stack = _make_stack(
+        cards=[_make_card(1, archived=True), _make_card(2, archived=True)]
+    )
+    result = _apply_stack_filters(
+        stack,
+        include_cards=True,
+        include_archived_cards=False,
+        description_max_length=None,
+    )
+    assert result.cards == []
+    assert result.cards is not None
 
 
 # _apply_card_filters -------------------------------------------------------
