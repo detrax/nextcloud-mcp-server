@@ -647,15 +647,18 @@ async def oauth_callback_nextcloud(request: Request):
 
     # Verify ID token signature + claims (issue #626 finding 1).
     # ``expected_nonce`` is the per-request nonce stored on the
-    # oauth_session row (PR #758 round-3 finding 1); falsy → skip nonce
-    # check for sessions written before the column existed.
+    # oauth_session row (PR #758 round-3 finding 1). ``nonce`` is already
+    # ``str | None`` and ``secrets.token_urlsafe`` never produces an empty
+    # string, so passing it directly is correct — pre-migration-006 rows
+    # surface as ``None`` from ``oauth_session.get("nonce")``, which
+    # ``verify_id_token`` already treats as "skip the check".
     logger.info("oauth_callback_nextcloud: Verifying ID token")
     try:
         userinfo = await verify_id_token(
             id_token,
             discovery_url=discovery_url,
             expected_audience=mcp_server_client_id,
-            expected_nonce=nonce or None,
+            expected_nonce=nonce,
         )
     except IdTokenVerificationError as e:
         logger.error("ID token verification failed: %s", e)

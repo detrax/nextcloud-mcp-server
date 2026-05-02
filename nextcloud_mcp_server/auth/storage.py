@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -139,9 +140,24 @@ class RefreshTokenStorage:
         1. New database: Run migrations from scratch
         2. Pre-Alembic database: Stamp with initial revision (no changes)
         3. Alembic-managed database: Upgrade to latest version
+
+        Raises:
+            RuntimeError: when the underlying SQLite library is older than
+                3.35, which is required for ``DELETE ... RETURNING`` used by
+                ``delete_browser_session`` (PR #758 round-5 review low 2).
+                Ubuntu 20.04 ships SQLite 3.31, so deployers on that
+                baseline must upgrade or use a newer Python image.
         """
         if self._initialized:
             return
+
+        if sqlite3.sqlite_version_info < (3, 35):
+            raise RuntimeError(
+                "SQLite >= 3.35 is required (DELETE ... RETURNING is used "
+                "by delete_browser_session); detected "
+                f"{sqlite3.sqlite_version}. Upgrade SQLite or use a Python "
+                "image with a newer bundled libsqlite3."
+            )
 
         # Ensure directory exists
         db_dir = Path(self.db_path).parent

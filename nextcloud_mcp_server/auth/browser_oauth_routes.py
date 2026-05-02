@@ -683,11 +683,22 @@ async def oauth_logout(request: Request) -> RedirectResponse | JSONResponse:
                     await _revoke_refresh_token_at_idp(oauth_ctx, refresh_token)
                     await storage.delete_refresh_token(user_id)
                     logger.info("Refresh token revoked + deleted for user %s", user_id)
-
-            await storage.delete_browser_session(session_id)
         except Exception as e:
             # Logout must always succeed locally; log and continue.
             logger.warning("Logout cleanup failed (continuing): %s", e)
+        finally:
+            # Always drop the browser_sessions row, even when the
+            # refresh-token cleanup above failed — otherwise an orphan
+            # row lingers until the hourly cleanup cron (PR #758 round-5
+            # review medium 1). Not exploitable (SessionAuthBackend
+            # already rejects sessions without a live refresh token), but
+            # a correctness gap worth closing here.
+            try:
+                await storage.delete_browser_session(session_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to delete browser session %s…: %s", session_id[:8], e
+                )
 
     response = RedirectResponse(next_url, status_code=302)
     response.delete_cookie("mcp_session")

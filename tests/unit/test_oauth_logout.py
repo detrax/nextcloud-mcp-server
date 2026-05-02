@@ -182,6 +182,56 @@ async def test_logout_swallows_storage_errors(storage):
     assert response.status_code == 302  # logout still succeeds
 
 
+async def test_logout_deletes_session_when_refresh_token_delete_fails(storage):
+    """Browser session row must be removed even if delete_refresh_token raises.
+
+    Pins PR #758 round-5 review medium 1: previously the two deletes lived
+    in the same try-block, so an error on ``delete_refresh_token`` left an
+    orphan ``browser_sessions`` row that lingered until the cleanup cron.
+    """
+    await storage.create_browser_session(session_id="sid-orphan", user_id="dave")
+    await storage.store_refresh_token(
+        user_id="dave", refresh_token="rt-dave", flow_type="browser"
+    )
+
+    real_delete_refresh_token = storage.delete_refresh_token
+    real_delete_browser_session = storage.delete_browser_session
+
+    storage.delete_refresh_token = AsyncMock(side_effect=RuntimeError("boom"))
+    delete_browser_session_calls: list[str] = []
+
+    async def tracking_delete_browser_session(session_id: str) -> bool:
+        delete_browser_session_calls.append(session_id)
+        return await real_delete_browser_session(session_id)
+
+    storage.delete_browser_session = tracking_delete_browser_session
+
+    request = _build_request(
+        cookie="sid-orphan",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+    )
+
+    try:
+        response = await oauth_logout(request)
+    finally:
+        storage.delete_refresh_token = real_delete_refresh_token
+        storage.delete_browser_session = real_delete_browser_session
+
+    assert response.status_code == 302
+    assert delete_browser_session_calls == ["sid-orphan"], (
+        "delete_browser_session must run even after delete_refresh_token raised"
+    )
+    assert await storage.get_browser_session_user("sid-orphan") is None, (
+        "browser_sessions row must be gone — finally branch failed to fire"
+    )
+
+
 async def test_logout_blocks_cross_origin_post(storage):
     """POST from a foreign Origin must be rejected with 403 (PR #758 finding 5)."""
     await storage.create_browser_session(session_id="sid-X", user_id="alice")
