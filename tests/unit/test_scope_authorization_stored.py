@@ -112,14 +112,12 @@ def _make_login_flow_ctx() -> MagicMock:
     return ctx
 
 
-async def test_decorator_elicits_before_raising_when_app_password_missing():
-    """When no app password is stored, the decorator must elicit a clickable
-    Astrolabe / Login-Flow-v2 prompt to the client *before* raising
-    ProvisioningRequiredError.
+async def test_decorator_elicits_and_uses_retry_message_when_user_accepts():
+    """When the elicit returns "accepted" the raised error must tell the user
+    to retry — *not* "call nc_auth_provision_access". The latter would loop
+    an LLM that just acknowledged the elicitation prompt.
 
-    Why: an LLM-only error message ("call nc_auth_provision_access") is
-    unfriendly to humans whose MCP client supports elicitation. See
-    cbcoutinho/nextcloud-mcp-server#752.
+    See PR #757 review feedback (cbcoutinho/nextcloud-mcp-server#757).
     """
     ctx = _make_login_flow_ctx()
 
@@ -147,11 +145,55 @@ async def test_decorator_elicits_before_raising_when_app_password_missing():
             "nextcloud_mcp_server.auth.elicitation.present_provisioning_required",
             elicit_mock,
         ),
-        pytest.raises(ProvisioningRequiredError),
+        pytest.raises(ProvisioningRequiredError) as exc_info,
     ):
         await fake_tool_missing_pwd(ctx=ctx)
 
     elicit_mock.assert_awaited_once_with(ctx)
+    msg = str(exc_info.value)
+    assert "retry the request" in msg
+    assert "nc_auth_provision_access" not in msg
+
+
+async def test_decorator_uses_legacy_message_when_elicitation_unsupported():
+    """When the elicit helper returns "message_only" (client lacks elicit
+    support), the raised error must keep the existing
+    "call nc_auth_provision_access" instruction so an agent has something
+    actionable. Mirrors the "accepted" case but for the fallback branch."""
+    ctx = _make_login_flow_ctx()
+
+    @require_scopes("notes.read")
+    async def fake_tool_missing_pwd_no_elicit(ctx: Context):  # noqa: ARG001
+        return "ok"
+
+    fake_settings = SimpleNamespace(enable_login_flow=True)
+    elicit_mock = AsyncMock(return_value="message_only")
+
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization.get_settings",
+            return_value=fake_settings,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.scope_authorization._get_stored_scopes",
+            return_value=None,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.extract_user_id_from_token",
+            return_value="alice",
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.elicitation.present_provisioning_required",
+            elicit_mock,
+        ),
+        pytest.raises(ProvisioningRequiredError) as exc_info,
+    ):
+        await fake_tool_missing_pwd_no_elicit(ctx=ctx)
+
+    elicit_mock.assert_awaited_once_with(ctx)
+    msg = str(exc_info.value)
+    assert "nc_auth_provision_access" in msg
+    assert "retry the request" not in msg
 
 
 async def test_decorator_does_not_elicit_when_scopes_only_partially_missing():

@@ -115,8 +115,9 @@ async def present_login_url(
         return "message_only"
     except Exception as e:
         logger.warning(
-            f"Elicitation failed unexpectedly ({type(e).__name__}: {e}), "
-            "falling back to message"
+            "Elicitation failed unexpectedly (%s: %s), falling back to message",
+            type(e).__name__,
+            e,
         )
         return "message_only"
 

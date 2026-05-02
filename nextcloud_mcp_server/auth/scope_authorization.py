@@ -159,13 +159,27 @@ def require_scopes(*required_scopes: str):
                             present_provisioning_required,
                         )
 
-                        await present_provisioning_required(ctx)
+                        elicit_result = await present_provisioning_required(ctx)
 
-                        error_msg = (
-                            f"Access denied to {func_name}: "
-                            f"Nextcloud access not provisioned. "
-                            f"Please call 'nc_auth_provision_access' first."
-                        )
+                        # Always raise — the decorator can't safely re-check
+                        # stored scopes mid-call (TTL cache, plus the LFv2
+                        # poller may still be running). Only the message
+                        # changes so an LLM that just acknowledged the
+                        # elicitation isn't told to call the auth tool
+                        # again (which would loop).
+                        if elicit_result == "accepted":
+                            error_msg = (
+                                f"Access denied to {func_name}: Nextcloud "
+                                f"access was not provisioned at the time of "
+                                f"this call. If you just completed "
+                                f"provisioning, please retry the request."
+                            )
+                        else:
+                            error_msg = (
+                                f"Access denied to {func_name}: "
+                                f"Nextcloud access not provisioned. "
+                                f"Please call 'nc_auth_provision_access' first."
+                            )
                         logger.warning(error_msg)
                         raise ProvisioningRequiredError(error_msg)
 

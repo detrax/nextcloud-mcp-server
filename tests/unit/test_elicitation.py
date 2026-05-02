@@ -31,6 +31,15 @@ def test_astrolabe_settings_url_prefers_public_issuer(monkeypatch):
     )
 
 
+def test_astrolabe_settings_url_strips_trailing_slash_from_public_issuer(monkeypatch):
+    """Trailing slash on NEXTCLOUD_PUBLIC_ISSUER_URL is normalized."""
+    monkeypatch.setenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "https://nc.example.com/")
+
+    assert (
+        _astrolabe_settings_url() == f"https://nc.example.com{ASTROLABE_SETTINGS_PATH}"
+    )
+
+
 def test_astrolabe_settings_url_falls_back_to_host(monkeypatch):
     """When only NEXTCLOUD_HOST is set, use it (and strip a trailing slash)."""
     monkeypatch.setenv("NEXTCLOUD_HOST", "https://only-host.example.com/")
