@@ -38,6 +38,7 @@ from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 from nextcloud_mcp_server.auth.token_utils import (
     IdTokenVerificationError,
+    get_oidc_discovery,
     verify_id_token,
 )
 from nextcloud_mcp_server.config import get_settings
@@ -91,6 +92,7 @@ class ASProxySession:
     code_challenge: str
     code_challenge_method: str
     requested_scopes: str
+    nonce: str = ""
     created_at: float = field(default_factory=time.time)
     expires_at: float = field(default_factory=lambda: time.time() + 600)
 
@@ -102,10 +104,6 @@ class ASProxySession:
 # In-memory stores (single-instance, ephemeral)
 _proxy_codes: dict[str, ProxyCodeEntry] = {}
 _as_proxy_sessions: dict[str, ASProxySession] = {}
-
-# OIDC discovery document cache (URL → (expires_at, data))
-_discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_DISCOVERY_CACHE_TTL = 300  # 5 minutes
 
 # DCR rate limiting (IP → [timestamps])
 _dcr_rate_limit: dict[str, list[float]] = {}
@@ -136,26 +134,6 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
         else f"{resource_server_id}/{s}"
         for s in scopes.split()
     )
-
-
-async def _get_cached_discovery(url: str) -> dict[str, Any]:
-    """Fetch OIDC discovery document with caching (5-minute TTL).
-
-    Follows redirects so the configured discovery URL works against Nextcloud
-    instances without pretty URLs enabled, where ``/.well-known/openid-configuration``
-    issues a 301 to ``/index.php/.well-known/openid-configuration``.
-    """
-    now = time.time()
-    if url in _discovery_cache:
-        expires_at, data = _discovery_cache[url]
-        if now < expires_at:
-            return data
-    async with nextcloud_httpx_client(follow_redirects=True) as http_client:
-        response = await http_client.get(url)
-        response.raise_for_status()
-        data = response.json()
-    _discovery_cache[url] = (now + _DISCOVERY_CACHE_TTL, data)
-    return data
 
 
 def _cleanup_expired_proxy_codes() -> None:
@@ -316,6 +294,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     # We do NOT forward PKCE to Nextcloud — the MCP server is a confidential client.
     server_state = secrets.token_urlsafe(32)
 
+    # OIDC nonce binds the IdP's ID token to THIS authorization request,
+    # blocking ID-token replay across flows (PR #758 round-2 finding 2).
+    server_nonce = secrets.token_urlsafe(32)
+
     requested_scope = request.query_params.get("scope", "")
     default_scopes = "openid profile email"
     resource_scopes = oauth_config.get("scopes", "")
@@ -333,6 +315,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         requested_scopes=scopes,
+        nonce=server_nonce,
     )
 
     # Use MCP server's own client_id with Nextcloud
@@ -359,7 +342,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Replace internal Docker hostname with public URL for browser access
@@ -395,6 +378,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         "response_type": "code",
         "scope": idp_scope_str,
         "state": server_state,
+        "nonce": server_nonce,
         "prompt": "consent",
         "resource": f"{mcp_server_url}/mcp",  # MCP server audience
     }
@@ -469,7 +453,7 @@ async def oauth_authorize_nextcloud(
         # supporting the offline_access scope.
         discovery_url = oauth_config.get("discovery_url")
         if discovery_url:
-            disc = await _get_cached_discovery(discovery_url)
+            disc = await get_oidc_discovery(discovery_url)
             scopes_supported = disc.get("scopes_supported")
             if scopes_supported is None or "offline_access" in scopes_supported:
                 scopes += " offline_access"
@@ -506,7 +490,7 @@ async def oauth_authorize_nextcloud(
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Fix internal hostname for browser access
@@ -623,7 +607,7 @@ async def oauth_callback_nextcloud(request: Request):
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Build token exchange params
@@ -917,7 +901,7 @@ async def _oauth_callback_as_proxy(
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Exchange auth code with Nextcloud (server-side, confidential client, no PKCE)
@@ -959,12 +943,18 @@ async def _oauth_callback_as_proxy(
     # transport could plant arbitrary identity claims into the proxy code
     # entry that gets handed back to the MCP client. Mirrors the
     # verification done in oauth_callback_nextcloud.
+    #
+    # ``expected_nonce`` is the per-request nonce we forwarded to the IdP
+    # in oauth_authorize (PR #758 round-2 finding 2); falsy → skip nonce
+    # check for backward compatibility with sessions stored before the
+    # nonce field was added.
     id_token = nc_token_response.get("id_token")
     try:
         await verify_id_token(
             id_token,
             discovery_url=discovery_url,
             expected_audience=mcp_server_client_id,
+            expected_nonce=session.nonce or None,
         )
     except IdTokenVerificationError as e:
         logger.error("AS proxy: ID token verification failed: %s", e)
@@ -1252,7 +1242,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Proxy refresh request to Nextcloud
@@ -1341,7 +1331,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     registration_endpoint = None
     if discovery_url:
         try:
-            discovery = await _get_cached_discovery(discovery_url)
+            discovery = await get_oidc_discovery(discovery_url)
             registration_endpoint = discovery.get("registration_endpoint")
         except Exception:
             logger.warning("Failed to fetch OIDC discovery for DCR endpoint")

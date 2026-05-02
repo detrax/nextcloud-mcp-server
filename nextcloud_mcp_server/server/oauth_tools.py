@@ -105,8 +105,12 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
             status = await astrolabe.get_background_sync_status(user_id)
 
             if status.get("has_access"):
-                logger.info(
-                    f"  get_provisioning_status: ✓ App password FOUND for user_id={user_id}"
+                # Demoted to debug (PR #758 round-2 nit 4): user_id ends up
+                # in log aggregation on every call, which is noise in a
+                # multi-tenant deployment.
+                logger.debug(
+                    "  get_provisioning_status: app password FOUND for user_id=%s",
+                    user_id,
                 )
                 provisioned_at_str = status.get("provisioned_at")
                 return ProvisioningStatus(
@@ -115,28 +119,28 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
                     credential_type="app_password",
                 )
         except Exception as e:
-            logger.debug(f"  App password check failed for {user_id}: {e}")
+            logger.debug("  App password check failed for %s: %s", user_id, e)
 
     # Check for OAuth refresh token (fallback)
-    logger.info(
-        f"  get_provisioning_status: Looking up refresh token for user_id={user_id}"
+    logger.debug(
+        "  get_provisioning_status: looking up refresh token for user_id=%s", user_id
     )
     storage = await get_shared_storage()
 
     token_data = await storage.get_refresh_token(user_id)
 
     if not token_data:
-        logger.info(
-            f"  get_provisioning_status: ✗ No credentials found for user_id={user_id}"
+        logger.debug(
+            "  get_provisioning_status: no credentials found for user_id=%s", user_id
         )
         return ProvisioningStatus(is_provisioned=False)
 
-    logger.info(
-        f"  get_provisioning_status: ✓ Refresh token FOUND for user_id={user_id}"
-    )
-    logger.info(f"    flow_type: {token_data.get('flow_type')}")
-    logger.info(
-        f"    provisioning_client_id: {token_data.get('provisioning_client_id', 'N/A')}"
+    logger.debug(
+        "  get_provisioning_status: refresh token FOUND for user_id=%s "
+        "flow_type=%s provisioning_client_id=%s",
+        user_id,
+        token_data.get("flow_type"),
+        token_data.get("provisioning_client_id", "N/A"),
     )
 
     # Convert timestamp to ISO format if present
@@ -370,18 +374,22 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
         "yes" if logged in, or elicitation prompting for login
     """
     try:
-        # Check if already logged in
-        logger.info(f"Checking provisioning status for user_id: {user_id}")
+        # Demoted to debug (PR #758 round-2 nit 4): per-user logging at INFO
+        # ends up in log aggregation on every check_logged_in call, which is
+        # noise in a hosted multi-tenant deployment.
+        logger.debug("Checking provisioning status for user_id=%s", user_id)
         status = await get_provisioning_status(ctx, user_id)
-        logger.info(f"  Provisioning status: is_provisioned={status.is_provisioned}")
+        logger.debug(
+            "  Provisioning status for %s: is_provisioned=%s",
+            user_id,
+            status.is_provisioned,
+        )
 
         if status.is_provisioned:
-            logger.info(f"✓ User {user_id} is already logged in - returning 'yes'")
-            logger.info("=" * 60)
+            logger.debug("User %s already logged in", user_id)
             return "yes"
 
-        logger.info(f"✗ User {user_id} is NOT logged in - triggering elicitation")
-        logger.info("=" * 60)
+        logger.debug("User %s NOT logged in — triggering elicitation", user_id)
 
         # Not logged in - generate OAuth URL for Flow 2
         # Use settings (handles both ENABLE_BACKGROUND_OPERATIONS and ENABLE_OFFLINE_ACCESS)
@@ -462,8 +470,11 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
             scopes=scopes,
         )
 
-        # Use elicitation to prompt user to login
-        logger.info(f"Eliciting login for user {user_id} with URL: {auth_url}")
+        # Use elicitation to prompt user to login. Logged at debug (PR #758
+        # round-2 nit 4): the auth URL contains the per-request ``state``
+        # token, which is sensitive enough that it shouldn't land in
+        # multi-tenant log aggregation by default.
+        logger.debug("Eliciting login for user %s (URL omitted)", user_id)
 
         result = await ctx.elicit(
             message=f"Please log in to Nextcloud at the following URL:\n\n{auth_url}\n\nAfter completing the login, check the box below and click OK.",
@@ -472,10 +483,15 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
 
         if result.action == "accept":
             # Check if login was successful by looking for refresh token
-            # Strategy: Try multiple lookup methods to handle both flows
-            logger.info("User accepted login prompt, checking for refresh token")
-            logger.info(f"  State parameter: {state[:16]}...")
-            logger.info(f"  User ID: {user_id}")
+            # Strategy: Try multiple lookup methods to handle both flows.
+            # Demoted to debug (PR #758 round-2 nit 4): user_id + state
+            # appear here on every elicitation accept.
+            logger.debug(
+                "User accepted login prompt; looking up refresh token "
+                "(user_id=%s state=%s...)",
+                user_id,
+                state[:16],
+            )
 
             # First, try to find token by provisioning_client_id (Flow 2 from elicitation)
             refresh_token_data = (
@@ -483,45 +499,39 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
             )
 
             if refresh_token_data:
-                logger.info("✓ Refresh token found via provisioning_client_id lookup")
-                logger.info(
-                    f"  Flow type: {refresh_token_data.get('flow_type', 'unknown')}"
-                )
-                logger.info(
-                    f"  Provisioned at: {refresh_token_data.get('provisioned_at', 'unknown')}"
+                logger.debug(
+                    "Refresh token found via provisioning_client_id lookup "
+                    "(flow_type=%s provisioned_at=%s)",
+                    refresh_token_data.get("flow_type", "unknown"),
+                    refresh_token_data.get("provisioned_at", "unknown"),
                 )
                 return "yes"
 
             # Fallback: Try to find token by user_id (browser login or any other flow)
-            logger.info(f"✗ No token found with provisioning_client_id={state[:16]}...")
-            logger.info(f"  Trying fallback lookup by user_id: {user_id}")
+            logger.debug(
+                "No token via provisioning_client_id=%s...; falling back to user_id=%s",
+                state[:16],
+                user_id,
+            )
 
             refresh_token_data = await storage.get_refresh_token(user_id)
 
             if refresh_token_data:
-                logger.info("✓ Refresh token found via user_id lookup")
-                logger.info(
-                    f"  Flow type: {refresh_token_data.get('flow_type', 'unknown')}"
-                )
-                logger.info(
-                    f"  Provisioned at: {refresh_token_data.get('provisioned_at', 'unknown')}"
-                )
-                logger.info(
-                    f"  Provisioning client ID: {refresh_token_data.get('provisioning_client_id', 'NULL')}"
-                )
-                logger.info(
-                    "  Note: This token was created via browser login or different flow"
+                logger.debug(
+                    "Refresh token found via user_id lookup "
+                    "(flow_type=%s provisioned_at=%s provisioning_client_id=%s)",
+                    refresh_token_data.get("flow_type", "unknown"),
+                    refresh_token_data.get("provisioned_at", "unknown"),
+                    refresh_token_data.get("provisioning_client_id", "NULL"),
                 )
                 return "yes"
 
             # No token found by either method
-            logger.warning(f"✗ No refresh token found for user {user_id}")
             logger.warning(
-                f"  Checked provisioning_client_id={state[:16]}... - NOT FOUND"
-            )
-            logger.warning(f"  Checked user_id={user_id} - NOT FOUND")
-            logger.warning(
-                "  This may indicate the user completed login but token wasn't stored"
+                "No refresh token found for user_id=%s (checked provisioning_client_id=%s... and user_id) — "
+                "user completed elicitation but token wasn't stored",
+                user_id,
+                state[:16],
             )
 
             return (

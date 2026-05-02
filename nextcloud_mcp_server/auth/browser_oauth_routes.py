@@ -407,11 +407,11 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         else:
             # Integrated mode (Nextcloud OIDC)
             discovery_url = oauth_config.get("discovery_url")
-            async with nextcloud_httpx_client() as http_client:
-                response = await http_client.get(discovery_url)
-                response.raise_for_status()
-                discovery = response.json()
-                token_endpoint = discovery["token_endpoint"]
+            # Use the shared 5-minute discovery cache; oauth_login() above
+            # has already populated it for this discovery_url so the
+            # callback should hit the cache rather than re-fetching.
+            discovery = await get_oidc_discovery(discovery_url)
+            token_endpoint = discovery["token_endpoint"]
 
             token_params = {
                 "grant_type": "authorization_code",

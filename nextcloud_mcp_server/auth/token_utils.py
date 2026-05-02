@@ -21,10 +21,11 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
-# OIDC discovery + JWKS caches keyed by URL → (expires_at, data). Mirrors the
-# pattern in oauth_routes._get_cached_discovery so that ID-token verification
-# during the OAuth callback doesn't make two extra round-trips per login (PR
-# #758 finding 4). 5-minute TTL matches oauth_routes.
+# OIDC discovery + JWKS caches keyed by URL → (expires_at, data). Single
+# source of truth for the codebase: oauth_routes / browser_oauth_routes both
+# go through ``get_oidc_discovery`` which reads/writes _discovery_cache, so
+# the first discovery fetch primes the cache for all later callers (PR #758
+# round-2 nit 3). 5-minute TTL.
 _discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _OIDC_CACHE_TTL = 300
@@ -35,16 +36,26 @@ class IdTokenVerificationError(Exception):
 
 
 async def _get_cached(
-    cache: dict[str, tuple[float, dict[str, Any]]], url: str
+    cache: dict[str, tuple[float, dict[str, Any]]],
+    url: str,
+    *,
+    follow_redirects: bool = False,
 ) -> dict[str, Any]:
-    """Return cached JSON response for *url* or fetch + cache on miss/expiry."""
+    """Return cached JSON response for *url* or fetch + cache on miss/expiry.
+
+    ``follow_redirects`` is forwarded to ``nextcloud_httpx_client``: discovery
+    fetches against Nextcloud without pretty URLs need it (the configured
+    ``/.well-known/openid-configuration`` path issues a 301), but JWKS
+    fetches deliberately stay strict — the URL came from the discovery
+    document we already trust, so a redirect there would be suspicious.
+    """
     now = time.time()
     entry = cache.get(url)
     if entry is not None:
         expires_at, data = entry
         if now < expires_at:
             return data
-    async with nextcloud_httpx_client() as http_client:
+    async with nextcloud_httpx_client(follow_redirects=follow_redirects) as http_client:
         response = await http_client.get(url)
         response.raise_for_status()
         data = response.json()
@@ -57,10 +68,13 @@ async def get_oidc_discovery(discovery_url: str) -> dict[str, Any]:
 
     Shares the 5-minute discovery cache used by `verify_id_token`, so a
     callback that does discovery → token-exchange → ID-token verification
-    reuses one HTTP round-trip instead of three. Public alias for `_get_cached`
-    against `_discovery_cache` (PR #758 nits 5 & 6).
+    reuses one HTTP round-trip instead of three. The fetch follows
+    redirects because Nextcloud without pretty URLs returns 301 from
+    ``/.well-known/openid-configuration`` to ``/index.php/.well-known/...``.
+    Single source of truth for OIDC discovery in the codebase
+    (PR #758 round-2 nit 3).
     """
-    return await _get_cached(_discovery_cache, discovery_url)
+    return await _get_cached(_discovery_cache, discovery_url, follow_redirects=True)
 
 
 async def verify_id_token(
@@ -103,7 +117,7 @@ async def verify_id_token(
         raise IdTokenVerificationError("ID token missing from token response")
 
     try:
-        discovery = await _get_cached(_discovery_cache, discovery_url)
+        discovery = await get_oidc_discovery(discovery_url)
 
         issuer = discovery.get("issuer")
         jwks_uri = discovery.get("jwks_uri")
