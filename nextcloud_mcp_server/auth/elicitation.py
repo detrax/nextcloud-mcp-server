@@ -46,9 +46,10 @@ def _astrolabe_settings_url() -> str | None:
 
     Prefers ``nextcloud_public_issuer_url`` (the browser-reachable public URL)
     over ``nextcloud_host`` (which may be an internal hostname in Docker
-    deployments). Returns None if neither is set, or if the configured base
-    URL is missing an http:// or https:// scheme — in the latter case the
-    caller renders the tool-only fallback message instead of a broken link.
+    deployments). Returns None if neither is set (or set to the empty
+    string), or if the configured base URL is missing an http:// or
+    https:// scheme — in the latter case the caller renders the tool-only
+    fallback message instead of a broken link.
     """
     settings = get_settings()
     base = (

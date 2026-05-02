@@ -179,6 +179,11 @@ def require_scopes(*required_scopes: str):
                             # time the next retry can still hit a not-yet-
                             # populated entry — hence the "wait a moment"
                             # qualifier below.
+                            logger.warning(
+                                "Access denied to %s: app password missing "
+                                "after user accepted elicitation; advising retry",
+                                func_name,
+                            )
                             error_msg = (
                                 f"Access denied to {func_name}: Nextcloud "
                                 f"access was not provisioned at the time of "
@@ -188,12 +193,18 @@ def require_scopes(*required_scopes: str):
                                 f"completing; wait a moment and try again."
                             )
                         else:
+                            logger.warning(
+                                "Access denied to %s: app password missing; "
+                                "advising nc_auth_provision_access "
+                                "(elicit_result=%s)",
+                                func_name,
+                                elicit_result,
+                            )
                             error_msg = (
                                 f"Access denied to {func_name}: "
                                 f"Nextcloud access not provisioned. "
                                 f"Please call 'nc_auth_provision_access' first."
                             )
-                        logger.warning(error_msg)
                         raise ProvisioningRequiredError(error_msg)
 
                     if stored_scopes == "all":

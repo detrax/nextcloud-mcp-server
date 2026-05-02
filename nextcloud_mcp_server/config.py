@@ -32,6 +32,7 @@ _DEFAULTS: dict[str, Any] = {
     "nextcloud_mcp_server_url": None,
     "nextcloud_resource_uri": None,
     "nextcloud_public_issuer_url": None,
+    "cookie_secure": None,
     # OAuth/OIDC
     "oidc_discovery_url": None,
     "nextcloud_oidc_client_id": None,
@@ -412,6 +413,11 @@ class Settings:
     # nextcloud_host when unset.
     nextcloud_public_issuer_url: str | None = None
 
+    # Browser cookie Secure flag. None = auto-detect from nextcloud_host
+    # scheme (https → True, else False). Set COOKIE_SECURE=true/false to
+    # override.
+    cookie_secure: bool | None = None
+
     # Nextcloud SSL/TLS settings
     nextcloud_verify_ssl: bool = True
     nextcloud_ca_bundle: str | None = None
@@ -784,6 +790,7 @@ def get_settings() -> Settings:
         "nextcloud_password": "NEXTCLOUD_PASSWORD",
         "nextcloud_app_password": "NEXTCLOUD_APP_PASSWORD",
         "nextcloud_public_issuer_url": "NEXTCLOUD_PUBLIC_ISSUER_URL",
+        "cookie_secure": "COOKIE_SECURE",
         # Nextcloud SSL/TLS settings
         "nextcloud_verify_ssl": "NEXTCLOUD_VERIFY_SSL",
         "nextcloud_ca_bundle": "NEXTCLOUD_CA_BUNDLE",
