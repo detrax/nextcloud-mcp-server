@@ -151,7 +151,16 @@ def require_scopes(*required_scopes: str):
                     stored_scopes = await _get_stored_scopes(user_id)
 
                     if stored_scopes is None:
-                        # No stored app password → require provisioning
+                        # No stored app password → require provisioning. Try to
+                        # elicit a clickable Astrolabe / Login-Flow-v2 link so
+                        # the user has somewhere to click; the elicit helper
+                        # silently falls back when the client lacks support.
+                        from nextcloud_mcp_server.auth.elicitation import (  # noqa: PLC0415
+                            present_provisioning_required,
+                        )
+
+                        await present_provisioning_required(ctx)
+
                         error_msg = (
                             f"Access denied to {func_name}: "
                             f"Nextcloud access not provisioned. "

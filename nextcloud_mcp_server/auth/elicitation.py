@@ -5,11 +5,20 @@ when the client supports it, or falling back to returning the URL in a message.
 """
 
 import logging
+import os
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+# Path of the Astrolabe Nextcloud app's settings UI. The full URL is
+# reconstructed at elicitation time from NEXTCLOUD_PUBLIC_ISSUER_URL /
+# NEXTCLOUD_HOST so the user gets a browser-reachable link without needing a
+# separate config knob. If the Astrolabe app is not installed this path will
+# 404, and the user falls back to the nc_auth_provision_access tool path
+# mentioned in the same message.
+ASTROLABE_SETTINGS_PATH = "/index.php/apps/astrolabe/settings"
 
 
 class LoginFlowConfirmation(BaseModel):
@@ -19,6 +28,30 @@ class LoginFlowConfirmation(BaseModel):
         default=False,
         description="Check this box after completing login at the provided URL",
     )
+
+
+class ProvisioningRequiredConfirmation(BaseModel):
+    """Schema for the 'app password not provisioned' elicitation."""
+
+    acknowledged: bool = Field(
+        default=False,
+        description="Check this box after enabling Nextcloud access",
+    )
+
+
+def _astrolabe_settings_url() -> str | None:
+    """Construct the Astrolabe settings page URL from environment.
+
+    Prefers ``NEXTCLOUD_PUBLIC_ISSUER_URL`` (the browser-reachable public URL)
+    over ``NEXTCLOUD_HOST`` (which may be an internal hostname in Docker
+    deployments). Returns None if neither is set.
+    """
+    base = (
+        os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL") or os.getenv("NEXTCLOUD_HOST") or ""
+    ).strip()
+    if not base:
+        return None
+    return f"{base.rstrip('/')}{ASTROLABE_SETTINGS_PATH}"
 
 
 async def present_login_url(
@@ -84,5 +117,81 @@ async def present_login_url(
         logger.warning(
             f"Elicitation failed unexpectedly ({type(e).__name__}: {e}), "
             "falling back to message"
+        )
+        return "message_only"
+
+
+async def present_provisioning_required(ctx: Context) -> str:
+    """Elicit a provisioning prompt when a tool is called without an app password.
+
+    Used by the ``@require_scopes`` decorator (Login Flow v2 path) to give
+    the user a clickable Astrolabe settings URL — or a fallback instruction
+    to call the ``nc_auth_provision_access`` MCP tool — instead of just
+    raising a plain ``ProvisioningRequiredError`` text message that an LLM
+    has to translate.
+
+    The Astrolabe settings URL is reconstructed from
+    ``NEXTCLOUD_PUBLIC_ISSUER_URL`` / ``NEXTCLOUD_HOST``; if Astrolabe is not
+    installed the link 404s and the user falls back to the tool path
+    suggested in the same message.
+
+    Returns:
+        Same string contract as :func:`present_login_url`:
+        ``"accepted"`` / ``"declined"`` / ``"cancelled"`` / ``"message_only"``.
+    """
+    settings_url = _astrolabe_settings_url()
+
+    if settings_url:
+        message = (
+            "Nextcloud access is not yet provisioned for this user.\n\n"
+            f"Open this URL to enable it via the Astrolabe app:\n\n{settings_url}\n\n"
+            "If the Astrolabe app is not installed, ask your MCP client to call "
+            "the `nc_auth_provision_access` tool instead — it will return a "
+            "Login Flow v2 URL you can open directly.\n\n"
+            "Then check the box below and retry the original request."
+        )
+    else:
+        message = (
+            "Nextcloud access is not yet provisioned for this user.\n\n"
+            "Ask your MCP client to call the `nc_auth_provision_access` tool — "
+            "it will return a Login Flow v2 URL you can open in your browser to "
+            "grant access.\n\n"
+            "Then check the box below and retry the original request."
+        )
+
+    if not hasattr(ctx, "elicit"):
+        logger.debug(
+            "Elicitation not available on context — returning message_only "
+            "(plain ProvisioningRequiredError will surface to the caller)"
+        )
+        return "message_only"
+
+    try:
+        result = await ctx.elicit(
+            message=message,
+            schema=ProvisioningRequiredConfirmation,
+        )
+
+        if result.action == "accept":
+            logger.info("User acknowledged provisioning-required prompt")
+            return "accepted"
+        elif result.action == "decline":
+            logger.info("User declined provisioning-required prompt")
+            return "declined"
+        else:
+            logger.info("User cancelled provisioning-required prompt")
+            return "cancelled"
+
+    except NotImplementedError:
+        logger.debug(
+            "Elicitation not supported by client — falling back to plain error"
+        )
+        return "message_only"
+    except Exception as e:
+        logger.warning(
+            "Provisioning elicitation failed unexpectedly (%s: %s), "
+            "falling back to plain error",
+            type(e).__name__,
+            e,
         )
         return "message_only"
