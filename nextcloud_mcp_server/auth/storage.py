@@ -227,8 +227,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
         scopes_json = json.dumps(scopes) if scopes else None
@@ -374,8 +380,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         start_time = time.time()
         try:
@@ -461,8 +473,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
@@ -635,8 +653,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         # Encrypt sensitive data
         encrypted_secret = self.cipher.encrypt(client_secret.encode())
@@ -708,8 +732,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(

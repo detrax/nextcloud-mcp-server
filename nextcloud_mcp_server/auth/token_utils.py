@@ -75,20 +75,31 @@ async def _get_cached(
     if entry is not None and time.time() < entry[0]:
         return entry[1]
     lock = await _get_fetch_lock(url)
-    async with lock:
-        # Re-check inside the lock — a concurrent waiter may have already
-        # populated the cache before we acquired it.
-        entry = cache.get(url)
-        if entry is not None and time.time() < entry[0]:
-            return entry[1]
-        async with nextcloud_httpx_client(
-            follow_redirects=follow_redirects
-        ) as http_client:
-            response = await http_client.get(url)
-            response.raise_for_status()
-            data = response.json()
-        cache[url] = (time.time() + _OIDC_CACHE_TTL, data)
-        return data
+    try:
+        async with lock:
+            # Re-check inside the lock — a concurrent waiter may have already
+            # populated the cache before we acquired it.
+            entry = cache.get(url)
+            if entry is not None and time.time() < entry[0]:
+                return entry[1]
+            async with nextcloud_httpx_client(
+                follow_redirects=follow_redirects
+            ) as http_client:
+                response = await http_client.get(url)
+                response.raise_for_status()
+                data = response.json()
+            cache[url] = (time.time() + _OIDC_CACHE_TTL, data)
+            return data
+    finally:
+        # Drop the dict entry so a misconfigured deployment hitting
+        # arbitrary URLs can't grow ``_fetch_locks`` without bound (PR #758
+        # round-4 review nit 4). Already-queued waiters share our local
+        # ``lock`` reference and remain coalesced; new arrivals lazily
+        # recreate a lock — by which time the cache is populated, so they
+        # short-circuit before reaching the lock anyway.
+        async with _fetch_locks_lock:
+            if _fetch_locks.get(url) is lock:
+                del _fetch_locks[url]
 
 
 async def get_oidc_discovery(discovery_url: str) -> dict[str, Any]:

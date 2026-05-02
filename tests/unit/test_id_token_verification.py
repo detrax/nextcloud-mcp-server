@@ -528,3 +528,10 @@ async def test_get_cached_coalesces_concurrent_misses():
     assert all(r == results[0] for r in results), (
         "concurrent callers received divergent cached data"
     )
+    # Pin the round-4 cleanup invariant: _fetch_locks must drain after the
+    # fetch completes so a probed deployment can't accumulate locks for
+    # arbitrary URLs.
+    assert len(token_utils._fetch_locks) == 0, (
+        "expected _fetch_locks to be empty after fetch, "
+        f"found {list(token_utils._fetch_locks)}"
+    )

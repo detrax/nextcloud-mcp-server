@@ -432,8 +432,10 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
         # Store state in session for validation on callback
         storage = await get_shared_storage()
 
-        # Create OAuth session for Flow 2
-        session_id = f"flow2_{user_id}_{secrets.token_hex(8)}"
+        # Create OAuth session for Flow 2. Identifier is purely random
+        # so audit-log entries / DB rows don't carry the user_id in the
+        # session_id field (PR #758 round-4 review medium 3).
+        session_id = f"flow2_{secrets.token_hex(16)}"
         redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
 
         await storage.store_oauth_session(

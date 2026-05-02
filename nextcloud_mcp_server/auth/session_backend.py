@@ -22,6 +22,18 @@ class SessionAuthBackend(AuthenticationBackend):
 
     For BasicAuth mode: Always authenticates as the configured user.
     For OAuth mode: Checks for valid session cookie with stored refresh token.
+
+    Behavior note — silent invalidation on refresh-token TTL expiry:
+        The OAuth path requires *both* a live ``browser_sessions`` row and a
+        live ``refresh_tokens`` row for the resolved user. Logout deletes
+        both atomically, so a logged-out user always fails closed here.
+        However, if the refresh token expires by TTL (without an explicit
+        logout) the row is removed by ``get_refresh_token`` and the browser
+        session becomes unusable — the user simply gets redirected to
+        ``/oauth/login``. This is intentional defense-in-depth: the
+        refresh-token check is what makes a leaked or stale browser cookie
+        unusable after revocation. Do not relax this without first removing
+        the cleanup invariant on logout (PR #758 round-4 review medium 2).
     """
 
     def __init__(self, oauth_enabled: bool = False):

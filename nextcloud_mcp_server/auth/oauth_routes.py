@@ -267,7 +267,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     )
 
     if not is_valid:
-        logger.warning(f"Client validation failed: {error_msg}")
+        logger.warning("Client validation failed: %s", error_msg)
         return JSONResponse(
             {
                 "error": "unauthorized_client",
@@ -326,10 +326,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
     logger.info("AS Proxy: Intermediary authorization flow")
-    logger.info(f"  Client: {client_id}")
-    logger.info(f"  MCP server client_id: {mcp_server_client_id}")
-    logger.info(f"  Server callback: {callback_uri}")
-    logger.info(f"  Scopes: {scopes}")
+    logger.info("  Client: %s", client_id)
+    logger.info("  MCP server client_id: %s", mcp_server_client_id)
+    logger.info("  Server callback: %s", callback_uri)
+    logger.info("  Scopes: %s", scopes)
 
     # Discover Nextcloud authorization endpoint
     discovery_url = oauth_config.get("discovery_url")
@@ -369,7 +369,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     )
     idp_scope_str = _transform_scopes_for_idp(scopes, resource_server_id)
     if resource_server_id:
-        logger.info(f"  IdP scopes (prefixed): {idp_scope_str}")
+        logger.info("  IdP scopes (prefixed): %s", idp_scope_str)
 
     # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
     idp_params = {
@@ -384,7 +384,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     }
 
     auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
-    logger.info(f"Redirecting to Nextcloud OIDC: {auth_url.split('?')[0]}")
+    logger.info("Redirecting to Nextcloud OIDC: %s", auth_url.split("?")[0])
 
     return RedirectResponse(auth_url, status_code=302)
 
@@ -553,7 +553,7 @@ async def oauth_callback_nextcloud(request: Request):
         error_description = request.query_params.get(
             "error_description", "Authorization failed"
         )
-        logger.error(f"Flow 2 authorization error: {error} - {error_description}")
+        logger.error("Flow 2 authorization error: %s - %s", error, error_description)
         return JSONResponse(
             {
                 "error": error,
@@ -685,16 +685,16 @@ async def oauth_callback_nextcloud(request: Request):
         refresh_expires_at = None
         if refresh_expires_in:
             refresh_expires_at = int(time.time()) + refresh_expires_in
-            logger.info(f"  refresh_expires_in: {refresh_expires_in}s")
-            logger.info(f"  refresh_expires_at: {refresh_expires_at}")
+            logger.info("  refresh_expires_in: %ss", refresh_expires_in)
+            logger.info("  refresh_expires_at: %s", refresh_expires_at)
 
         logger.info("Storing refresh token:")
-        logger.info(f"  user_id: {user_id}")
+        logger.info("  user_id: %s", user_id)
         logger.info("  flow_type: flow2")
         logger.info("  token_audience: nextcloud")
-        logger.info(f"  provisioning_client_id: {state[:16]}...")
-        logger.info(f"  scopes: {granted_scopes}")
-        logger.info(f"  expires_at: {refresh_expires_at}")
+        logger.info("  provisioning_client_id: %s...", state[:16])
+        logger.info("  scopes: %s", granted_scopes)
+        logger.info("  expires_at: %s", refresh_expires_at)
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -705,7 +705,7 @@ async def oauth_callback_nextcloud(request: Request):
             scopes=granted_scopes,
             expires_at=refresh_expires_at,
         )
-        logger.info(f"✓ Stored Flow 2 master refresh token for user {user_id}")
+        logger.info("✓ Stored Flow 2 master refresh token for user %s", user_id)
         logger.info("=" * 60)
 
     # Return success HTML page
@@ -787,7 +787,7 @@ async def oauth_callback(request: Request):
         oauth_session.get("flow_type", "browser") if oauth_session else "browser"
     )
 
-    logger.info(f"Unified callback: flow_type={flow_type} (from session lookup)")
+    logger.info("Unified callback: flow_type=%s (from session lookup)", flow_type)
 
     if flow_type == "flow2":
         # Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
@@ -801,7 +801,7 @@ async def oauth_callback(request: Request):
 
     else:
         # Unknown flow type
-        logger.warning(f"Unknown flow_type in OAuth session: {flow_type}")
+        logger.warning("Unknown flow_type in OAuth session: %s", flow_type)
         return JSONResponse(
             {
                 "error": "invalid_request",
@@ -831,7 +831,7 @@ async def _oauth_callback_as_proxy(
         error_description = request.query_params.get(
             "error_description", "Authorization failed"
         )
-        logger.error(f"AS proxy callback error: {error} - {error_description}")
+        logger.error("AS proxy callback error: %s - %s", error, error_description)
 
         # Retrieve session to redirect back to client with error
         session = _as_proxy_sessions.pop(server_state, None)
@@ -1186,7 +1186,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     if not _verify_pkce_s256(code_verifier, entry.code_challenge):
-        logger.warning(f"PKCE verification failed for client {entry.client_id}")
+        logger.warning("PKCE verification failed for client %s", entry.client_id)
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -1196,7 +1196,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     logger.info(
-        f"AS proxy token: Returning Nextcloud token for client {entry.client_id}"
+        "AS proxy token: Returning Nextcloud token for client %s", entry.client_id
     )
 
     # Return the stored Nextcloud token response directly
@@ -1329,7 +1329,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     # Remove timestamps outside the window
     timestamps = [t for t in timestamps if now - t < _DCR_RATE_LIMIT_WINDOW]
     if len(timestamps) >= _DCR_RATE_LIMIT_MAX:
-        logger.warning(f"DCR rate limit exceeded for {client_ip}")
+        logger.warning("DCR rate limit exceeded for %s", client_ip)
         return JSONResponse(
             {
                 "error": "too_many_requests",
@@ -1365,7 +1365,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    logger.info(f"DCR proxy: Forwarding registration to {registration_endpoint}")
+    logger.info("DCR proxy: Forwarding registration to %s", registration_endpoint)
 
     async with nextcloud_httpx_client() as http_client:
         response = await http_client.post(
@@ -1401,7 +1401,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             redirect_uris=redirect_uris,
             name=client_name,
         )
-        logger.info(f"DCR proxy: Registered client {new_client_id} in local registry")
+        logger.info("DCR proxy: Registered client %s in local registry", new_client_id)
 
     return JSONResponse(nc_response, status_code=response.status_code)
 

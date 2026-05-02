@@ -614,6 +614,12 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     )
 
     response = RedirectResponse(next_url, status_code=302)
+    # CSRF protection is layered: ``SameSite=Lax`` blocks cross-site POSTs
+    # in modern browsers; ``oauth_logout`` is POST-only with an Origin /
+    # Referer check (``_origin_matches_self``) to cover older browsers and
+    # non-browser clients. ``HttpOnly`` blocks JS exfiltration on XSS;
+    # ``Secure`` is gated to non-HTTP hosts in dev (PR #758 round-4 review
+    # nit 6).
     response.set_cookie(
         key="mcp_session",
         value=session_id,
@@ -705,8 +711,12 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
     try:
         discovery_url = cfg.get("discovery_url") or settings.oidc_discovery_url
         if not discovery_url and settings.nextcloud_host:
+            # Strip trailing slash so a host configured as
+            # ``https://cloud.example.com/`` doesn't produce a double-slash
+            # in the well-known URL (PR #758 round-4 review nit 5).
             discovery_url = (
-                f"{settings.nextcloud_host}/.well-known/openid-configuration"
+                f"{settings.nextcloud_host.rstrip('/')}"
+                "/.well-known/openid-configuration"
             )
         if not discovery_url:
             return
