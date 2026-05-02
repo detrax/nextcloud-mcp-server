@@ -70,8 +70,14 @@ async def test_callback_escapes_error_query_params(storage):
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
 
 
-async def test_callback_escapes_idp_http_error_body(storage):
-    """IdP-returned HTTPError body must be HTML-escaped before reflection."""
+async def test_callback_does_not_reflect_idp_http_error_body(storage):
+    """IdP-returned HTTPError body must not appear in the user-visible HTML.
+
+    Updated for PR #758 round-3 nit 6: the callback now logs the IdP
+    response server-side and shows the user only a generic message + a
+    correlation ID, eliminating reflection of attacker-controllable text
+    into the error page entirely.
+    """
     discovery = {"token_endpoint": "http://idp.example/token"}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -135,5 +141,10 @@ async def test_callback_escapes_idp_http_error_body(storage):
 
     body = response.body.decode()
     assert response.status_code == 500
+    # Strict: neither the raw payload nor an HTML-escaped form of the
+    # IdP body should appear — the page must show only the generic
+    # message + correlation ID.
     assert XSS_PAYLOAD not in body
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" not in body
+    assert "An internal error occurred" in body
+    assert "Correlation ID" in body

@@ -77,9 +77,14 @@ class LoginConfirmation(BaseModel):
     )
 
 
-async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
+async def _get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
     """
     Check the provisioning status for Nextcloud access.
+
+    Internal helper — leading underscore signals that ``user_id`` is a
+    trusted identity claim that callers MUST derive from the verified
+    access token. The MCP tool wrappers in ``register_oauth_tools`` are
+    the only legitimate callers (PR #758 round-3 finding 3).
 
     Checks for both credential types:
     1. App password from Astrolabe (works today)
@@ -200,9 +205,9 @@ def generate_oauth_url_for_flow2(
     return f"{auth_endpoint}?{urlencode(params)}"
 
 
-async def provision_nextcloud_access(ctx: Context, user_id: str) -> ProvisioningResult:
+async def _provision_nextcloud_access(ctx: Context, user_id: str) -> ProvisioningResult:
     """
-    MCP Tool: Provision offline access to Nextcloud resources.
+    Internal helper for the ``provision_nextcloud_access`` MCP tool.
 
     Returns URL to Astrolabe settings page where users can provision background
     sync access using either:
@@ -219,7 +224,7 @@ async def provision_nextcloud_access(ctx: Context, user_id: str) -> Provisioning
     """
     try:
         # Check if already provisioned
-        status = await get_provisioning_status(ctx, user_id)
+        status = await _get_provisioning_status(ctx, user_id)
         if status.is_provisioned:
             return ProvisioningResult(
                 success=True,
@@ -268,9 +273,9 @@ async def provision_nextcloud_access(ctx: Context, user_id: str) -> Provisioning
         )
 
 
-async def revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResult:
+async def _revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResult:
     """
-    MCP Tool: Revoke offline access to Nextcloud resources.
+    Internal helper for the ``revoke_nextcloud_access`` MCP tool.
 
     This tool removes the stored refresh token and revokes access
     that was granted via Flow 2.
@@ -285,7 +290,7 @@ async def revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResul
     """
     try:
         # Check current status
-        status = await get_provisioning_status(ctx, user_id)
+        status = await _get_provisioning_status(ctx, user_id)
         if not status.is_provisioned:
             return RevocationResult(
                 success=True,
@@ -339,9 +344,9 @@ async def revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResul
         )
 
 
-async def check_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
+async def _check_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
     """
-    MCP Tool: Check the current provisioning status.
+    Internal helper for the ``check_provisioning_status`` MCP tool.
 
     This tool allows users to check whether they have provisioned
     Nextcloud access and see details about their current authorization.
@@ -354,12 +359,12 @@ async def check_provisioning_status(ctx: Context, user_id: str) -> ProvisioningS
     Returns:
         ProvisioningStatus with current state
     """
-    return await get_provisioning_status(ctx, user_id)
+    return await _get_provisioning_status(ctx, user_id)
 
 
-async def check_logged_in(ctx: Context, user_id: str) -> str:
+async def _check_logged_in(ctx: Context, user_id: str) -> str:
     """
-    MCP Tool: Check if user is logged in and elicit login if needed.
+    Internal helper for the ``check_logged_in`` MCP tool.
 
     This tool checks whether the user has completed Flow 2 (resource provisioning)
     to grant offline access to Nextcloud. If not logged in, it uses MCP elicitation
@@ -378,7 +383,7 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
         # ends up in log aggregation on every check_logged_in call, which is
         # noise in a hosted multi-tenant deployment.
         logger.debug("Checking provisioning status for user_id=%s", user_id)
-        status = await get_provisioning_status(ctx, user_id)
+        status = await _get_provisioning_status(ctx, user_id)
         logger.debug(
             "  Provisioning status for %s: is_provisioned=%s",
             user_id,
@@ -568,7 +573,7 @@ def register_oauth_tools(mcp):
     @require_scopes("openid")
     async def tool_provision_access(ctx: Context) -> ProvisioningResult:
         user_id = await extract_user_id_from_token(ctx)
-        return await provision_nextcloud_access(ctx, user_id)
+        return await _provision_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
         name="revoke_nextcloud_access",
@@ -583,7 +588,7 @@ def register_oauth_tools(mcp):
     @require_scopes("openid")
     async def tool_revoke_access(ctx: Context) -> RevocationResult:
         user_id = await extract_user_id_from_token(ctx)
-        return await revoke_nextcloud_access(ctx, user_id)
+        return await _revoke_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
         name="check_provisioning_status",
@@ -597,7 +602,7 @@ def register_oauth_tools(mcp):
     @require_scopes("openid")
     async def tool_check_status(ctx: Context) -> ProvisioningStatus:
         user_id = await extract_user_id_from_token(ctx)
-        return await check_provisioning_status(ctx, user_id)
+        return await _check_provisioning_status(ctx, user_id)
 
     @mcp.tool(
         name="check_logged_in",
@@ -614,4 +619,4 @@ def register_oauth_tools(mcp):
     @require_scopes("openid")
     async def tool_check_logged_in(ctx: Context) -> str:
         user_id = await extract_user_id_from_token(ctx)
-        return await check_logged_in(ctx, user_id)
+        return await _check_logged_in(ctx, user_id)

@@ -66,16 +66,16 @@ def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
     cfg = oauth_ctx.get("config") or oauth_ctx
     mcp_server_url = cfg.get("mcp_server_url")
     if not mcp_server_url:
-        # Mis-configured deployment — fail open rather than break logout, but
-        # log loudly so the operator can see this is happening (PR #758
-        # finding 3). Other OAuth code paths require ``mcp_server_url`` and
-        # KeyError if it's absent, so this branch should never fire in a
-        # correctly configured deployment.
-        logger.warning(
-            "CSRF check bypassed on /oauth/logout: mcp_server_url not "
+        # Fail closed (PR #758 round-3 finding 2): a future code path that
+        # leaves ``mcp_server_url`` unset would otherwise silently disable
+        # CSRF protection on /oauth/logout. Blocking the logout is
+        # recoverable — the user just re-logs-in once the misconfiguration
+        # is fixed — and the error log makes the cause monitorable.
+        logger.error(
+            "CSRF check failed on /oauth/logout: mcp_server_url not "
             "configured in oauth_context — set NEXTCLOUD_MCP_SERVER_URL"
         )
-        return True
+        return False
 
     expected = _normalise_origin(mcp_server_url)
     raw = request.headers.get("origin") or request.headers.get("referer")
@@ -434,14 +434,19 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 token_data = response.json()
 
     except httpx.HTTPStatusError as e:
+        # Correlation IDs let the user reference a specific failure in the
+        # server logs without us having to reflect raw exception/IdP text
+        # back into the HTML page (PR #758 round-3 nit 6).
+        correlation_id = secrets.token_hex(8)
         error_body = (
             e.response.text if hasattr(e.response, "text") else str(e.response.content)
         )
         logger.error(
-            "Token exchange failed: HTTP %s - %s", e.response.status_code, error_body
+            "Token exchange failed (correlation_id=%s): HTTP %s - %s",
+            correlation_id,
+            e.response.status_code,
+            error_body,
         )
-        # html_escape: error_body originates from the IdP and could contain
-        # markup that would be reflected into the failure page otherwise.
         return HTMLResponse(
             f"""
             <!DOCTYPE html>
@@ -449,15 +454,17 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             <head><title>Login Failed</title></head>
             <body>
                 <h1>Login Failed</h1>
-                <p>Failed to exchange authorization code for tokens</p>
-                <p>HTTP {e.response.status_code}: {html_escape(error_body)}</p>
+                <p>An internal error occurred while exchanging the authorization code.</p>
+                <p>Correlation ID: <code>{html_escape(correlation_id)}</code></p>
+                <p>Please try again, or contact your administrator if the problem persists.</p>
             </body>
             </html>
             """,
             status_code=500,
         )
     except Exception as e:
-        logger.error("Token exchange failed: %s", e)
+        correlation_id = secrets.token_hex(8)
+        logger.error("Token exchange failed (correlation_id=%s): %s", correlation_id, e)
         return HTMLResponse(
             f"""
             <!DOCTYPE html>
@@ -465,8 +472,9 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             <head><title>Login Failed</title></head>
             <body>
                 <h1>Login Failed</h1>
-                <p>Failed to exchange authorization code for tokens</p>
-                <p>Error: {html_escape(str(e))}</p>
+                <p>An internal error occurred while exchanging the authorization code.</p>
+                <p>Correlation ID: <code>{html_escape(correlation_id)}</code></p>
+                <p>Please try again, or contact your administrator if the problem persists.</p>
             </body>
             </html>
             """,
@@ -508,13 +516,19 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             expected_nonce=nonce,
         )
     except IdTokenVerificationError as e:
-        logger.error("ID token verification failed: %s", e)
-        # html_escape: defense-in-depth. The exception text is currently
-        # server-constructed, but escape on the success path too so any
-        # future error wrapping that includes IdP response text can't
-        # smuggle markup into the login-failure page.
+        # Same correlation-ID pattern as token-exchange failures
+        # (PR #758 round-3 nit 6) — log the detail server-side and only
+        # show a generic message + correlation ID in the browser.
+        correlation_id = secrets.token_hex(8)
+        logger.error(
+            "ID token verification failed (correlation_id=%s): %s",
+            correlation_id,
+            e,
+        )
         return HTMLResponse(
-            f"<h1>Login Failed</h1><p>ID token failed verification: {html_escape(str(e))}</p>",
+            f"<h1>Login Failed</h1>"
+            f"<p>The ID token failed verification.</p>"
+            f"<p>Correlation ID: <code>{html_escape(correlation_id)}</code></p>",
             status_code=400,
         )
 

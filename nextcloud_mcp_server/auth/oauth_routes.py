@@ -465,7 +465,12 @@ async def oauth_authorize_nextcloud(
     digest = hashlib.sha256(code_verifier.encode()).digest()
     code_challenge = urlsafe_b64encode(digest).decode().rstrip("=")
 
-    # Store code_verifier in session for retrieval during callback
+    # OIDC nonce binds the IdP-returned ID token to THIS auth request
+    # (PR #758 round-3 finding 1). Browser flow + AS proxy already do
+    # this; Flow 2 is the third path and was missing it.
+    nonce = secrets.token_urlsafe(32)
+
+    # Store code_verifier + nonce in session for retrieval during callback
     storage = oauth_ctx["storage"]
     await storage.store_oauth_session(
         session_id=state,
@@ -475,6 +480,7 @@ async def oauth_authorize_nextcloud(
         code_challenge=code_challenge,
         code_challenge_method="S256",
         mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        nonce=nonce,
         flow_type="flow2",
         ttl_seconds=600,  # 10 minutes
     )
@@ -512,6 +518,7 @@ async def oauth_authorize_nextcloud(
         "response_type": "code",
         "scope": scopes,
         "state": state,
+        "nonce": nonce,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
         "prompt": "consent",  # Force consent to show resource access
@@ -572,12 +579,15 @@ async def oauth_callback_nextcloud(request: Request):
     storage: RefreshTokenStorage = oauth_ctx["storage"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier from session storage (PKCE required by Nextcloud OIDC)
+    # Retrieve code_verifier + nonce from session storage (PKCE + OIDC
+    # nonce binding both required for Flow 2 — round-3 finding 1).
     code_verifier = ""
+    nonce: str | None = None
     oauth_session = await storage.get_oauth_session(state)
     if oauth_session:
         # code_verifier was stored in mcp_authorization_code field
         code_verifier = oauth_session.get("mcp_authorization_code", "")
+        nonce = oauth_session.get("nonce")
         logger.info(
             f"Retrieved code_verifier for Flow 2 callback (state={state[:16]}...)"
         )
@@ -636,12 +646,16 @@ async def oauth_callback_nextcloud(request: Request):
     id_token = token_data.get("id_token")
 
     # Verify ID token signature + claims (issue #626 finding 1).
+    # ``expected_nonce`` is the per-request nonce stored on the
+    # oauth_session row (PR #758 round-3 finding 1); falsy → skip nonce
+    # check for sessions written before the column existed.
     logger.info("oauth_callback_nextcloud: Verifying ID token")
     try:
         userinfo = await verify_id_token(
             id_token,
             discovery_url=discovery_url,
             expected_audience=mcp_server_client_id,
+            expected_nonce=nonce or None,
         )
     except IdTokenVerificationError as e:
         logger.error("ID token verification failed: %s", e)

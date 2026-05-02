@@ -92,7 +92,13 @@ async def test_logout_deletes_refresh_token_and_session(storage):
 
     request = _build_request(
         cookie="sid-1",
-        oauth_context={"storage": storage, "config": {"discovery_url": None}},
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
     )
 
     with patch(
@@ -118,7 +124,10 @@ async def test_logout_calls_revocation_when_refresh_token_present(storage):
         cookie="sid-2",
         oauth_context={
             "storage": storage,
-            "config": {"discovery_url": "http://idp/.well-known"},
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": "http://idp/.well-known",
+            },
         },
     )
 
@@ -138,7 +147,13 @@ async def test_logout_no_session_cookie_returns_302(storage):
     """Without a cookie, logout still 302s and doesn't touch storage."""
     request = _build_request(
         cookie=None,
-        oauth_context={"storage": storage, "config": {"discovery_url": None}},
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
     )
     response = await oauth_logout(request)
     assert response.status_code == 302
@@ -157,7 +172,10 @@ async def test_logout_swallows_storage_errors(storage):
         cookie="sid-3",
         oauth_context={
             "storage": broken_storage,
-            "config": {"discovery_url": None},
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
         },
     )
     response = await oauth_logout(request)
@@ -295,6 +313,26 @@ async def test_logout_allows_referer_when_origin_missing(storage):
     assert response.status_code == 302
 
 
+async def test_logout_blocked_when_mcp_server_url_missing(storage):
+    """Fail-closed CSRF (PR #758 round-3 finding 2): missing ``mcp_server_url``
+    in oauth_ctx must reject the logout, not allow it.
+
+    A future code path that leaves ``mcp_server_url`` unset would
+    otherwise silently disable CSRF protection. Blocking is recoverable.
+    """
+    await storage.create_browser_session(session_id="sid-MM", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-MM",
+        oauth_context={"storage": storage, "config": {"discovery_url": None}},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 403
+    # Session must NOT have been deleted.
+    assert await storage.get_browser_session_user("sid-MM") == "alice"
+
+
 async def test_logout_handles_session_with_no_refresh_token(storage):
     """Cookie + session row exist but refresh token already gone — logout is idempotent."""
     await storage.create_browser_session(session_id="sid-4", user_id="dave")
@@ -302,7 +340,13 @@ async def test_logout_handles_session_with_no_refresh_token(storage):
     revoke = AsyncMock()
     request = _build_request(
         cookie="sid-4",
-        oauth_context={"storage": storage, "config": {"discovery_url": None}},
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
     )
     with patch(
         "nextcloud_mcp_server.auth.browser_oauth_routes._revoke_refresh_token_at_idp",

@@ -1178,6 +1178,16 @@ class RefreshTokenStorage:
             ttl_seconds,
         )
 
+        # Audit log to match the pattern used by the other security-relevant
+        # storage operations (PR #758 round-3 nit 5). Browser session
+        # establishment is a security-relevant event.
+        await self._audit_log(
+            event="create_browser_session",
+            user_id=user_id,
+            resource_type="browser_session",
+            resource_id=session_id[:8],
+        )
+
     async def get_browser_session_user(self, session_id: str) -> str | None:
         """Look up the user_id bound to a browser session_id, or None.
 
@@ -1210,7 +1220,16 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
+        # SELECT the row before DELETE so we can attribute the audit log
+        # entry to the right user (PR #758 round-3 nit 5).
         async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT user_id FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            user_id = row[0] if row else None
+
             cursor = await db.execute(
                 "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
             )
@@ -1219,6 +1238,13 @@ class RefreshTokenStorage:
 
         if deleted:
             logger.debug("Deleted browser session %s", session_id[:8])
+            if user_id:
+                await self._audit_log(
+                    event="delete_browser_session",
+                    user_id=user_id,
+                    resource_type="browser_session",
+                    resource_id=session_id[:8],
+                )
         return deleted
 
     async def cleanup_expired_browser_sessions(self) -> int:
