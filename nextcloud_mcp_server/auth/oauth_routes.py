@@ -597,6 +597,11 @@ async def oauth_callback_nextcloud(request: Request):
         logger.info(
             f"Retrieved code_verifier for Flow 2 callback (state={state[:16]}...)"
         )
+        # One-time-use session: delete eagerly so the stored code_verifier
+        # can't be replayed for the remainder of the oauth_sessions TTL.
+        # Mirrors browser_oauth_routes.oauth_login_callback (PR #758
+        # follow-up review).
+        await storage.delete_oauth_session(state)
 
     # Exchange code for tokens
     mcp_server_client_id = os.getenv(

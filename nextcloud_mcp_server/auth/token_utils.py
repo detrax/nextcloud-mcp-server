@@ -13,6 +13,8 @@ from jwt import PyJWKSet
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.fastmcp import Context
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
 
 from ..http import nextcloud_httpx_client
 
@@ -188,8 +190,17 @@ async def extract_user_id_from_token(_ctx: Context) -> str:
             verifier-populated AccessToken via get_access_token().
 
     Returns:
-        user_id from the verified token, or "default_user" when no token is
-        present (e.g. BasicAuth mode where this should not be called).
+        user_id from the verified token, or ``"default_user"`` when no
+        access token is present at all (BasicAuth mode — there is no
+        OAuth identity to extract, so the sentinel is returned and the
+        caller's BasicAuth branch handles it).
+
+    Raises:
+        McpError: An access token was present but had no ``sub`` claim
+            (``access_token.resource`` empty). Failing closed prevents a
+            malformed IdP token from silently bucketing every request
+            under the ``"default_user"`` key in SQLite, which would risk
+            cross-tenant data exposure (PR #758 follow-up review).
     """
     access_token: AccessToken | None = get_access_token()
 
@@ -202,6 +213,11 @@ async def extract_user_id_from_token(_ctx: Context) -> str:
         logger.error(
             "Access token has no resource (sub) claim — verifier should have rejected it"
         )
-        return "default_user"
+        raise McpError(
+            ErrorData(
+                code=-1,
+                message="Cannot determine user identity from access token",
+            )
+        )
 
     return user_id

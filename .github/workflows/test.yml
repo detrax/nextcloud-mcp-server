@@ -139,6 +139,11 @@ jobs:
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
           NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
+          # Required by docker-compose.yml since PR #758 finding 5 (no more
+          # hardcoded Fernet keys). Generated once and stored as a repo
+          # secret; the CI tokens.db is ephemeral so a single shared key
+          # across services is acceptable.
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
