@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import jwt
 import pytest
 from cryptography.fernet import Fernet
 
@@ -282,23 +281,6 @@ class TestTokenBrokerService:
                 mock_storage.delete_refresh_token.assert_called_once_with("user1")
                 # Verify cache was cleared
                 assert await token_broker.cache.get("user1") is None
-
-    async def test_validate_token_audience(self, token_broker):
-        """Test token audience validation."""
-        # Create test token with audience
-        test_payload = {
-            "sub": "user1",
-            "aud": ["nextcloud", "other-service"],
-            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-        }
-        test_token = jwt.encode(test_payload, "secret", algorithm="HS256")
-
-        # Should not raise for correct audience
-        await token_broker._validate_token_audience(test_token, "nextcloud")
-
-        # Should raise for wrong audience
-        with pytest.raises(ValueError, match="doesn't include wrong-audience"):
-            await token_broker._validate_token_audience(test_token, "wrong-audience")
 
     async def test_token_refresh_with_network_error(self, token_broker, mock_storage):
         """Test handling network errors during token refresh."""

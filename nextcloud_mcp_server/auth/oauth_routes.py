@@ -30,13 +30,16 @@ from typing import Any
 from urllib.parse import unquote, urlencode
 from urllib.parse import urlparse as parse_url
 
-import jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.token_utils import (
+    IdTokenVerificationError,
+    verify_id_token,
+)
 from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
@@ -643,23 +646,29 @@ async def oauth_callback_nextcloud(request: Request):
     refresh_token = token_data.get("refresh_token")
     id_token = token_data.get("id_token")
 
-    # Decode ID token to get user info
-    logger.info("=" * 60)
-    logger.info("oauth_callback_nextcloud: Extracting user_id from ID token")
-    logger.info("=" * 60)
+    # Verify ID token signature + claims (issue #626 finding 1).
+    logger.info("oauth_callback_nextcloud: Verifying ID token")
     try:
-        userinfo = jwt.decode(id_token, options={"verify_signature": False})
-        user_id = userinfo.get("sub")
-        username = userinfo.get("preferred_username") or userinfo.get("email")
-        logger.info("  ✓ ID token decode SUCCESSFUL")
-        logger.info(f"  Extracted user_id: {user_id}")
-        logger.info(f"  Username: {username}")
-        logger.info(f"  ID token payload keys: {list(userinfo.keys())}")
-        logger.info(f"Flow 2: User {username} provisioned resource access")
-    except Exception as e:
-        logger.error(f"  ✗ ID token decode FAILED: {type(e).__name__}: {e}")
-        user_id = "unknown"
-        logger.error(f"  Using fallback user_id: {user_id}")
+        userinfo = await verify_id_token(
+            id_token,
+            discovery_url=discovery_url,
+            expected_audience=mcp_server_client_id,
+        )
+    except IdTokenVerificationError as e:
+        logger.error("ID token verification failed: %s", e)
+        return JSONResponse(
+            {
+                "error": "invalid_token",
+                "error_description": "ID token failed verification",
+            },
+            status_code=400,
+        )
+
+    user_id = userinfo["sub"]
+    username = userinfo.get("preferred_username") or userinfo.get("email")
+    logger.info(
+        "Flow 2: User %s (sub=%s) provisioned resource access", username, user_id
+    )
 
     # Store master refresh token for Flow 2
     if refresh_token:

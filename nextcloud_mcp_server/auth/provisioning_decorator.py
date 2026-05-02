@@ -9,7 +9,7 @@ import functools
 import logging
 from typing import Callable
 
-import jwt
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import Context
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
@@ -65,16 +65,12 @@ def require_provisioning(func: Callable) -> Callable:
             return await func(*args, **kwargs)
 
         # Offline access mode - check if user has completed Flow 2 provisioning
-        # Get user_id from authorization token
-        user_id = None
-        if hasattr(ctx, "authorization") and ctx.authorization:
-            try:
-                token = ctx.authorization.token
-                payload = jwt.decode(token, options={"verify_signature": False})
-                user_id = payload.get("sub")
-                logger.debug(f"Checking provisioning for user: {user_id}")
-            except Exception as e:
-                logger.warning(f"Failed to extract user_id from token: {e}")
+        # Read user_id from the verified AccessToken populated by
+        # UnifiedTokenVerifier; no second decode of the raw JWT here.
+        access_token = get_access_token()
+        user_id = access_token.resource if access_token else None
+        if user_id:
+            logger.debug("Checking provisioning for user: %s", user_id)
 
         if not user_id:
             raise McpError(
@@ -149,12 +145,8 @@ def require_provisioning_or_suggest(func: Callable) -> Callable:
         if ctx:
             # Try to check provisioning status
             try:
-                # Get user_id from authorization token
-                user_id = None
-                if hasattr(ctx, "authorization") and ctx.authorization:
-                    token = ctx.authorization.token
-                    payload = jwt.decode(token, options={"verify_signature": False})
-                    user_id = payload.get("sub")
+                access_token = get_access_token()
+                user_id = access_token.resource if access_token else None
 
                 if user_id:
                     # Check provisioning status

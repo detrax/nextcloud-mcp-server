@@ -10,14 +10,18 @@ import os
 import secrets
 import time
 from base64 import urlsafe_b64encode
+from html import escape as html_escape
 from urllib.parse import urlencode
 from urllib.parse import urlparse as parse_url
 
 import httpx
-import jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from nextcloud_mcp_server.auth.token_utils import (
+    IdTokenVerificationError,
+    verify_id_token,
+)
 from nextcloud_mcp_server.auth.userinfo_routes import (
     _get_userinfo_endpoint,
     _query_idp_userinfo,
@@ -383,16 +387,44 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     logger.info(f"Refresh token present: {refresh_token is not None}")
     logger.info(f"ID token present: {id_token is not None}")
 
-    # Decode ID token to get user info
+    # Resolve the discovery URL + audience used for THIS auth request so
+    # we can verify the ID token signature + claims (issue #626 finding 1).
+    if oauth_client:
+        # External IdP path
+        verification_audience = oauth_client.client_id
+        verification_discovery_url = getattr(oauth_client, "discovery_url", None)
+    else:
+        # Integrated Nextcloud OIDC path
+        verification_audience = oauth_config["client_id"]
+        verification_discovery_url = oauth_config.get("discovery_url")
+
+    if not verification_discovery_url:
+        logger.error("Cannot verify ID token: no discovery_url available")
+        return HTMLResponse(
+            "<h1>Login Failed</h1><p>OIDC discovery URL not configured</p>",
+            status_code=500,
+        )
+
     try:
-        userinfo = jwt.decode(id_token, options={"verify_signature": False})
-        user_id = userinfo.get("sub")
-        username = userinfo.get("preferred_username") or userinfo.get("email")
-        logger.info(f"Browser login successful: {username} (sub={user_id})")
-    except Exception as e:
-        logger.warning(f"Failed to decode ID token: {e}")
-        user_id = f"user-{secrets.token_hex(8)}"
-        username = "unknown"
+        userinfo = await verify_id_token(
+            id_token,
+            discovery_url=verification_discovery_url,
+            expected_audience=verification_audience,
+        )
+    except IdTokenVerificationError as e:
+        logger.error("ID token verification failed: %s", e)
+        # html_escape: defense-in-depth. The exception text is currently
+        # server-constructed, but escape on the success path too so any
+        # future error wrapping that includes IdP response text can't
+        # smuggle markup into the login-failure page.
+        return HTMLResponse(
+            f"<h1>Login Failed</h1><p>ID token failed verification: {html_escape(str(e))}</p>",
+            status_code=400,
+        )
+
+    user_id = userinfo["sub"]
+    username = userinfo.get("preferred_username") or userinfo.get("email")
+    logger.info("Browser login successful: %s (sub=%s)", username, user_id)
 
     # Calculate refresh token expiration from token response
     refresh_expires_in = token_data.get("refresh_expires_in")
@@ -455,40 +487,118 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             logger.error(f"Error caching user profile: {e}")
             # Continue anyway - profile cache is optional for browser UI
 
-    # Create response and set session cookie
-    # Redirect to stored next_url (from OAuth session) or /app as default
+    # Create a server-side browser session: a random opaque session_id is
+    # mapped to the verified user_id in `browser_sessions`. The cookie value
+    # is the session_id (never the raw user_id — see issue #626 finding 2).
+    session_id = secrets.token_urlsafe(32)
+    session_ttl = 86400 * 30  # 30 days
+    await storage.create_browser_session(
+        session_id=session_id, user_id=user_id, ttl_seconds=session_ttl
+    )
+
     response = RedirectResponse(next_url, status_code=302)
     response.set_cookie(
         key="mcp_session",
-        value=user_id,
-        max_age=86400 * 30,  # 30 days
+        value=session_id,
+        max_age=session_ttl,
         httponly=True,
         secure=_should_use_secure_cookies(),
         samesite="lax",
     )
 
-    logger.info(f"Session cookie set for user: {username}")
+    logger.info("Session cookie set for user %s (sid=%s…)", username, session_id[:8])
     return response
 
 
 async def oauth_logout(request: Request) -> RedirectResponse:
-    """Browser OAuth logout - clears session cookie.
+    """Browser OAuth logout — invalidate session and revoke refresh token.
+
+    Issue #626 finding 4: prior implementation only cleared the cookie,
+    leaving the refresh token in storage (valid up to 90 days). This now:
+      1. Resolves the user_id for the current browser session_id.
+      2. Calls the IdP `revocation_endpoint` for the stored refresh token
+         when the IdP advertises one.
+      3. Deletes the stored refresh token regardless of revocation success.
+      4. Deletes the browser_sessions row so the cookie is unusable even
+         if it leaks.
+      5. Clears the cookie on the response.
 
     Query parameters:
         next: Optional URL to redirect to after logout (default: /oauth/login)
-
-    Returns:
-        302 redirect with cleared session cookie
     """
     next_url = request.query_params.get("next", "/oauth/login")
+    session_id = request.cookies.get("mcp_session")
 
-    # TODO: Optionally revoke refresh token from storage
-    # session_id = request.cookies.get("mcp_session")
-    # if session_id:
-    #     await storage.delete_refresh_token(session_id)
+    oauth_ctx = getattr(request.app.state, "oauth_context", None)
+    storage = oauth_ctx.get("storage") if oauth_ctx else None
+
+    if session_id and storage and oauth_ctx:
+        try:
+            user_id = await storage.get_browser_session_user(session_id)
+            if user_id:
+                token_data = await storage.get_refresh_token(user_id)
+                refresh_token = token_data.get("refresh_token") if token_data else None
+
+                if refresh_token:
+                    await _revoke_refresh_token_at_idp(oauth_ctx, refresh_token)
+                    await storage.delete_refresh_token(user_id)
+                    logger.info("Refresh token revoked + deleted for user %s", user_id)
+
+            await storage.delete_browser_session(session_id)
+        except Exception as e:
+            # Logout must always succeed locally; log and continue.
+            logger.warning("Logout cleanup failed (continuing): %s", e)
 
     response = RedirectResponse(next_url, status_code=302)
     response.delete_cookie("mcp_session")
 
     logger.info("User logged out, session cookie cleared")
     return response
+
+
+async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> None:
+    """Best-effort RFC 7009 revocation against the IdP.
+
+    Silent on failure: revoking remotely is a defense-in-depth step on top
+    of deleting the local copy, and we don't want logout to error if the
+    IdP is unreachable or doesn't advertise a revocation endpoint.
+    """
+    try:
+        discovery_url = oauth_ctx.get("discovery_url") or os.getenv(
+            "OIDC_DISCOVERY_URL",
+            f"{os.getenv('NEXTCLOUD_HOST', '')}/.well-known/openid-configuration",
+        )
+        if not discovery_url:
+            return
+
+        async with nextcloud_httpx_client() as http_client:
+            discovery_response = await http_client.get(discovery_url)
+            discovery_response.raise_for_status()
+            discovery = discovery_response.json()
+            revocation_endpoint = discovery.get("revocation_endpoint")
+            if not revocation_endpoint:
+                logger.debug("IdP advertises no revocation_endpoint; skipping")
+                return
+
+            client_id = oauth_ctx.get("client_id") or os.getenv("OIDC_CLIENT_ID")
+            client_secret = oauth_ctx.get("client_secret") or os.getenv(
+                "OIDC_CLIENT_SECRET"
+            )
+            if not (client_id and client_secret):
+                logger.debug("No OIDC client credentials available for revocation")
+                return
+
+            response = await http_client.post(
+                revocation_endpoint,
+                data={
+                    "token": refresh_token,
+                    "token_type_hint": "refresh_token",
+                },
+                auth=(client_id, client_secret),
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Refresh token revocation returned HTTP %s", response.status_code
+                )
+    except Exception as e:
+        logger.warning("Refresh token revocation failed: %s", e)

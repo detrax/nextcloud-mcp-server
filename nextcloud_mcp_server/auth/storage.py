@@ -1134,6 +1134,90 @@ class RefreshTokenStorage:
         return deleted
 
     # ============================================================================
+    # Browser Sessions (OAuth admin UI)
+    # ============================================================================
+    #
+    # Maps a cryptographically random `session_id` (cookie value) to the
+    # authenticated user_id. Replaces the prior `mcp_session=<user_id>`
+    # cookie pattern (issue #626 finding 2). Cookie value is opaque, expires,
+    # and can be revoked server-side without forcing the user to roll their
+    # IdP `sub`.
+
+    async def create_browser_session(
+        self,
+        session_id: str,
+        user_id: str,
+        ttl_seconds: int = 86400 * 30,
+    ) -> None:
+        """Persist a random session_id → user_id mapping for browser auth."""
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        expires_at = now + ttl_seconds
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO browser_sessions
+                (session_id, user_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, user_id, now, expires_at),
+            )
+            await db.commit()
+
+        logger.debug(
+            "Stored browser session %s for user %s (expires in %ss)",
+            session_id[:8],
+            user_id,
+            ttl_seconds,
+        )
+
+    async def get_browser_session_user(self, session_id: str) -> Optional[str]:
+        """Look up the user_id bound to a browser session_id, or None.
+
+        Returns None when the session is unknown or expired. Expired rows
+        are deleted on encounter to keep the table small.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT user_id, expires_at FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        if row["expires_at"] < time.time():
+            logger.debug("Browser session %s expired", session_id[:8])
+            await self.delete_browser_session(session_id)
+            return None
+
+        return row["user_id"]
+
+    async def delete_browser_session(self, session_id: str) -> bool:
+        """Delete a browser session row. Returns True when a row was removed."""
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.debug("Deleted browser session %s", session_id[:8])
+        return deleted
+
+    # ============================================================================
     # Webhook Registration Tracking (both BasicAuth and OAuth modes)
     # ============================================================================
 

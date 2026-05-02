@@ -198,9 +198,7 @@ def generate_oauth_url_for_flow2(
     return f"{auth_endpoint}?{urlencode(params)}"
 
 
-async def provision_nextcloud_access(
-    ctx: Context, user_id: Optional[str] = None
-) -> ProvisioningResult:
+async def provision_nextcloud_access(ctx: Context, user_id: str) -> ProvisioningResult:
     """
     MCP Tool: Provision offline access to Nextcloud resources.
 
@@ -211,16 +209,13 @@ async def provision_nextcloud_access(
 
     Args:
         ctx: MCP context with user's Flow 1 token
-        user_id: Optional user identifier (extracted from token if not provided)
+        user_id: Authenticated user identifier (must be derived from the
+            verified access token by the caller; never accept from MCP input).
 
     Returns:
         ProvisioningResult with Astrolabe settings URL or status
     """
     try:
-        # Extract user ID from the MCP access token (Flow 1 token)
-        if not user_id:
-            user_id = await extract_user_id_from_token(ctx)
-
         # Check if already provisioned
         status = await get_provisioning_status(ctx, user_id)
         if status.is_provisioned:
@@ -271,9 +266,7 @@ async def provision_nextcloud_access(
         )
 
 
-async def revoke_nextcloud_access(
-    ctx: Context, user_id: Optional[str] = None
-) -> RevocationResult:
+async def revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResult:
     """
     MCP Tool: Revoke offline access to Nextcloud resources.
 
@@ -281,19 +274,14 @@ async def revoke_nextcloud_access(
     that was granted via Flow 2.
 
     Args:
-        mcp: MCP context
-        user_id: Optional user identifier
+        ctx: MCP context
+        user_id: Authenticated user identifier (must be derived from the
+            verified access token by the caller; never accept from MCP input).
 
     Returns:
         RevocationResult with status
     """
     try:
-        # Get user ID from token if not provided
-        if not user_id:
-            logger.info("Extracting user_id from access token for revoke...")
-            user_id = await extract_user_id_from_token(ctx)
-            logger.info(f"  Revoke using user_id: {user_id}")
-
         # Check current status
         status = await get_provisioning_status(ctx, user_id)
         if not status.is_provisioned:
@@ -350,9 +338,7 @@ async def revoke_nextcloud_access(
         )
 
 
-async def check_provisioning_status(
-    ctx: Context, user_id: Optional[str] = None
-) -> ProvisioningStatus:
+async def check_provisioning_status(ctx: Context, user_id: str) -> ProvisioningStatus:
     """
     MCP Tool: Check the current provisioning status.
 
@@ -360,24 +346,17 @@ async def check_provisioning_status(
     Nextcloud access and see details about their current authorization.
 
     Args:
-        mcp: MCP context
-        user_id: Optional user identifier
+        ctx: MCP context
+        user_id: Authenticated user identifier (must be derived from the
+            verified access token by the caller; never accept from MCP input).
 
     Returns:
         ProvisioningStatus with current state
     """
-    # Get user ID from context if not provided
-    if not user_id:
-        user_id = (
-            ctx.context.get("user_id", "default_user")  # type: ignore
-            if hasattr(ctx, "context")
-            else "default_user"
-        )
-
     return await get_provisioning_status(ctx, user_id)
 
 
-async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
+async def check_logged_in(ctx: Context, user_id: str) -> str:
     """
     MCP Tool: Check if user is logged in and elicit login if needed.
 
@@ -387,23 +366,13 @@ async def check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
 
     Args:
         ctx: MCP context with user's Flow 1 token
-        user_id: Optional user identifier (extracted from token if not provided)
+        user_id: Authenticated user identifier (must be derived from the
+            verified access token by the caller; never accept from MCP input).
 
     Returns:
         "yes" if logged in, or elicitation prompting for login
     """
     try:
-        # Extract user ID from the MCP access token (Flow 1 token)
-        logger.info("=" * 60)
-        logger.info("check_logged_in: Starting user_id extraction")
-        logger.info("=" * 60)
-
-        if not user_id:
-            user_id = await extract_user_id_from_token(ctx)
-            logger.info(f"  Final user_id for check_logged_in: {user_id}")
-        else:
-            logger.info(f"  user_id provided as argument: {user_id}")
-
         # Check if already logged in
         logger.info(f"Checking provisioning status for user_id: {user_id}")
         status = await get_provisioning_status(ctx, user_id)
@@ -591,10 +560,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_provision_access(
-        ctx: Context,
-        user_id: Optional[str] = None,
-    ) -> ProvisioningResult:
+    async def tool_provision_access(ctx: Context) -> ProvisioningResult:
+        user_id = await extract_user_id_from_token(ctx)
         return await provision_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
@@ -608,9 +575,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_revoke_access(
-        ctx: Context, user_id: Optional[str] = None
-    ) -> RevocationResult:
+    async def tool_revoke_access(ctx: Context) -> RevocationResult:
+        user_id = await extract_user_id_from_token(ctx)
         return await revoke_nextcloud_access(ctx, user_id)
 
     @mcp.tool(
@@ -623,9 +589,8 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_check_status(
-        ctx: Context, user_id: Optional[str] = None
-    ) -> ProvisioningStatus:
+    async def tool_check_status(ctx: Context) -> ProvisioningStatus:
+        user_id = await extract_user_id_from_token(ctx)
         return await check_provisioning_status(ctx, user_id)
 
     @mcp.tool(
@@ -641,5 +606,6 @@ def register_oauth_tools(mcp):
         ),
     )
     @require_scopes("openid")
-    async def tool_check_logged_in(ctx: Context, user_id: Optional[str] = None) -> str:
+    async def tool_check_logged_in(ctx: Context) -> str:
+        user_id = await extract_user_id_from_token(ctx)
         return await check_logged_in(ctx, user_id)

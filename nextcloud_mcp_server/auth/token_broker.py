@@ -20,7 +20,6 @@ from typing import Dict, Optional, Tuple
 
 import anyio
 import httpx
-import jwt
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
@@ -488,35 +487,6 @@ class TokenBrokerService:
             f"Refreshed access token with scopes {scopes} (expires in {expires_in}s)"
         )
         return access_token, expires_in
-
-    async def _validate_token_audience(self, token: str, expected_audience: str):
-        """
-        Validate that token has correct audience claim.
-
-        Args:
-            token: JWT token to validate
-            expected_audience: Expected audience value
-
-        Raises:
-            ValueError: If audience doesn't match
-        """
-        try:
-            # Decode without verification to check claims
-            # In production, should verify signature
-            claims = jwt.decode(token, options={"verify_signature": False})
-
-            audience = claims.get("aud", [])
-            if isinstance(audience, str):
-                audience = [audience]
-
-            if expected_audience not in audience:
-                raise ValueError(
-                    f"Token audience {audience} doesn't include {expected_audience}"
-                )
-
-        except jwt.DecodeError as e:
-            # Token might be opaque, skip validation
-            logger.debug(f"Cannot decode token for audience validation: {e}")
 
     async def refresh_master_token(self, user_id: str) -> bool:
         """
