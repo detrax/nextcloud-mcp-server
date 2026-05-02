@@ -255,6 +255,37 @@ async def test_deck_get_stacks(mocker):
     mock_make_request.assert_called_once()
 
 
+async def test_deck_get_archived_stacks(mocker):
+    """Test that get_archived_stacks targets the archived endpoint and parses the response."""
+    mock_response = create_mock_response(
+        status_code=200,
+        json_data=[
+            {
+                "id": 9,
+                "title": "Archived Stack",
+                "boardId": 123,
+                "order": 1,
+                "deletedAt": 0,
+            },
+        ],
+    )
+
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    mock_make_request = mocker.patch.object(
+        DeckClient, "_make_request", return_value=mock_response
+    )
+
+    client = DeckClient(mock_client, "testuser")
+    stacks = await client.get_archived_stacks(board_id=123)
+
+    assert isinstance(stacks, list)
+    assert len(stacks) == 1
+    assert stacks[0].id == 9
+
+    mock_make_request.assert_called_once()
+    assert "/boards/123/stacks/archived" in mock_make_request.call_args.args[1]
+
+
 # Card Tests
 
 
