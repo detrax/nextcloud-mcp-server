@@ -32,6 +32,48 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
+    """Return True when Origin/Referer is missing or matches our own host.
+
+    Used to gate POST /oauth/logout against cross-origin form submissions
+    (PR #758 finding 5). Per OWASP CSRF cheat sheet, the policy is:
+      - If neither Origin nor Referer is set, allow (same-origin POST in
+        privacy-conscious browsers may strip both).
+      - Otherwise, the netloc of the first present header must equal the
+        netloc of the configured ``mcp_server_url``.
+    """
+    cfg = oauth_ctx.get("config") or oauth_ctx
+    mcp_server_url = cfg.get("mcp_server_url")
+    if not mcp_server_url:
+        # Mis-configured deployment — fail open rather than break logout.
+        return True
+
+    expected = parse_url(mcp_server_url).netloc.lower()
+    raw = request.headers.get("origin") or request.headers.get("referer")
+    if not raw:
+        return True
+    return parse_url(raw).netloc.lower() == expected
+
+
+def _safe_next_url(raw: str | None, default: str) -> str:
+    """Return a path-only redirect target, falling back to *default*.
+
+    Blocks open-redirect abuse via the ``?next=`` query parameter on
+    ``/oauth/login`` and ``/oauth/logout`` (and the round-tripped
+    ``client_redirect_uri`` stored on the oauth_session). A safe target:
+      - starts with a single ``/`` (so it's a path on this server)
+      - does NOT start with ``//`` (which would be protocol-relative)
+      - has no whitespace or control characters that could trick browsers
+
+    Anything else returns *default*.
+    """
+    if not raw or not raw.startswith("/") or raw.startswith("//"):
+        return default
+    if any(c.isspace() or ord(c) < 0x20 for c in raw):
+        return default
+    return raw
+
+
 def _should_use_secure_cookies() -> bool:
     """Determine if cookies should have secure flag.
 
@@ -73,14 +115,17 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Debug: Log oauth_config contents
-    logger.info(f"oauth_login called - oauth_config keys: {oauth_config.keys()}")
-    logger.info(f"oauth_login called - client_id: {oauth_config.get('client_id')}")
-    logger.info(f"oauth_login called - oauth_client: {oauth_client is not None}")
+    # Demoted to DEBUG (PR #758 nit a) — these previously leaked the
+    # full set of config keys + the client_id at INFO on every login.
+    logger.debug("oauth_login called - oauth_config keys: %s", oauth_config.keys())
+    logger.debug("oauth_login called - client_id: %s", oauth_config.get("client_id"))
+    logger.debug("oauth_login called - oauth_client: %s", oauth_client is not None)
 
-    # Get redirect URL from query params (default to /app)
-    next_url = request.query_params.get("next", "/app")
-    logger.info(f"oauth_login - next_url: {next_url}")
+    # Get redirect URL from query params (default to /app). Validated at
+    # write-time so we never store an attacker-controlled absolute URL on
+    # the oauth_session row (issue #758 finding 3).
+    next_url = _safe_next_url(request.query_params.get("next"), "/app")
+    logger.debug("oauth_login - next_url: %s", next_url)
 
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
@@ -142,7 +187,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         }
 
         auth_url = f"{oauth_client.authorization_endpoint}?{urlencode(idp_params)}"
-        logger.info(f"Redirecting to external IdP login: {auth_url.split('?')[0]}")
+        logger.debug("Redirecting to external IdP login: %s", auth_url.split("?")[0])
     else:
         # Integrated mode (Nextcloud OIDC)
         discovery_url = oauth_config.get("discovery_url")
@@ -199,11 +244,10 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "resource": nextcloud_resource_uri,  # Request tokens for Nextcloud API access
         }
 
-        # Debug: Log full parameters
-        logger.info(f"Building Nextcloud OIDC auth URL with params: {idp_params}")
+        logger.debug("Building Nextcloud OIDC auth URL with params: %s", idp_params)
 
         auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
-        logger.info(f"Redirecting to Nextcloud OIDC login: {auth_url}")
+        logger.debug("Redirecting to Nextcloud OIDC login: %s", auth_url)
 
     return RedirectResponse(auth_url, status_code=302)
 
@@ -228,8 +272,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         error_description = request.query_params.get(
             "error_description", "Authorization failed"
         )
-        logger.error(f"OAuth login error: {error} - {error_description}")
+        logger.error("OAuth login error: %s - %s", error, error_description)
         login_url = str(request.url_for("oauth_login"))
+        # html_escape: error / error_description come from attacker-controlled
+        # query parameters and would otherwise reflect into the failure page.
         return HTMLResponse(
             f"""
             <!DOCTYPE html>
@@ -237,9 +283,9 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             <head><title>Login Failed</title></head>
             <body>
                 <h1>Login Failed</h1>
-                <p>Error: {error}</p>
-                <p>{error_description}</p>
-                <p><a href="{login_url}">Try again</a></p>
+                <p>Error: {html_escape(error)}</p>
+                <p>{html_escape(error_description)}</p>
+                <p><a href="{html_escape(login_url)}">Try again</a></p>
             </body>
             </html>
             """,
@@ -278,8 +324,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     if oauth_session:
         # code_verifier was stored in mcp_authorization_code field
         code_verifier = oauth_session.get("mcp_authorization_code", "")
-        # next_url was stored in client_redirect_uri field
-        next_url = oauth_session.get("client_redirect_uri", "/app")
+        # next_url was stored in client_redirect_uri field — re-validate at
+        # read-time as defense-in-depth (issue #758 finding 3). The session
+        # row could have been written by an older code path or reused.
+        next_url = _safe_next_url(oauth_session.get("client_redirect_uri"), "/app")
         # Clean up the temporary session
         # Note: We don't have delete_oauth_session method, but it will expire after TTL
 
@@ -347,8 +395,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             e.response.text if hasattr(e.response, "text") else str(e.response.content)
         )
         logger.error(
-            f"Token exchange failed: HTTP {e.response.status_code} - {error_body}"
+            "Token exchange failed: HTTP %s - %s", e.response.status_code, error_body
         )
+        # html_escape: error_body originates from the IdP and could contain
+        # markup that would be reflected into the failure page otherwise.
         return HTMLResponse(
             f"""
             <!DOCTYPE html>
@@ -357,14 +407,14 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             <body>
                 <h1>Login Failed</h1>
                 <p>Failed to exchange authorization code for tokens</p>
-                <p>HTTP {e.response.status_code}: {error_body}</p>
+                <p>HTTP {e.response.status_code}: {html_escape(error_body)}</p>
             </body>
             </html>
             """,
             status_code=500,
         )
     except Exception as e:
-        logger.error(f"Token exchange failed: {e}")
+        logger.error("Token exchange failed: %s", e)
         return HTMLResponse(
             f"""
             <!DOCTYPE html>
@@ -373,7 +423,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             <body>
                 <h1>Login Failed</h1>
                 <p>Failed to exchange authorization code for tokens</p>
-                <p>Error: {e}</p>
+                <p>Error: {html_escape(str(e))}</p>
             </body>
             </html>
             """,
@@ -383,9 +433,11 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     refresh_token = token_data.get("refresh_token")
     id_token = token_data.get("id_token")
 
-    logger.info(f"Token exchange response keys: {token_data.keys()}")
-    logger.info(f"Refresh token present: {refresh_token is not None}")
-    logger.info(f"ID token present: {id_token is not None}")
+    # Demoted to DEBUG (PR #758 nit a) — these were previously logged at
+    # INFO on every login.
+    logger.debug("Token exchange response keys: %s", token_data.keys())
+    logger.debug("Refresh token present: %s", refresh_token is not None)
+    logger.debug("ID token present: %s", id_token is not None)
 
     # Resolve the discovery URL + audience used for THIS auth request so
     # we can verify the ID token signature + claims (issue #626 finding 1).
@@ -431,8 +483,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     refresh_expires_at = None
     if refresh_expires_in:
         refresh_expires_at = int(time.time()) + refresh_expires_in
-        logger.info(
-            f"Refresh token expires in {refresh_expires_in}s (at timestamp {refresh_expires_at})"
+        logger.debug(
+            "Refresh token expires in %ss (at timestamp %s)",
+            refresh_expires_in,
+            refresh_expires_at,
         )
 
     # Extract granted scopes
@@ -442,10 +496,13 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
 
     # Store refresh token (for background jobs ONLY)
     if refresh_token:
-        logger.info(f"Storing refresh token for user_id: {user_id}")
-        logger.info(f"  State parameter (provisioning_client_id): {state[:16]}...")
-        logger.info(f"  Granted scopes: {granted_scopes}")
-        logger.info(f"  Expires at: {refresh_expires_at}")
+        logger.debug(
+            "Storing refresh token for user_id=%s state=%s... scopes=%s expires_at=%s",
+            user_id,
+            state[:16],
+            granted_scopes,
+            refresh_expires_at,
+        )
         await storage.store_refresh_token(
             user_id=user_id,
             refresh_token=refresh_token,
@@ -454,9 +511,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             provisioning_client_id=state,  # Store state for unified session lookup
             scopes=granted_scopes,
         )
-        logger.info(f"✓ Refresh token stored successfully for user_id: {user_id}")
         logger.info(
-            f"  Token can now be found via provisioning_client_id={state[:16]}..."
+            "Refresh token stored for user %s (lookup key: %s...)",
+            user_id,
+            state[:16],
         )
     else:
         logger.warning("No refresh token in token response - cannot store session")
@@ -478,13 +536,13 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
                 if profile_data:
                     # Cache profile for browser UI (no token needed to display)
                     await storage.store_user_profile(user_id, profile_data)
-                    logger.info(f"✓ User profile cached for {user_id}")
+                    logger.debug("User profile cached for %s", user_id)
                 else:
-                    logger.warning(f"Failed to query userinfo endpoint for {user_id}")
+                    logger.warning("Failed to query userinfo endpoint for %s", user_id)
             else:
                 logger.warning("Could not determine userinfo endpoint")
         except Exception as e:
-            logger.error(f"Error caching user profile: {e}")
+            logger.error("Error caching user profile: %s", e)
             # Continue anyway - profile cache is optional for browser UI
 
     # Create a server-side browser session: a random opaque session_id is
@@ -510,7 +568,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     return response
 
 
-async def oauth_logout(request: Request) -> RedirectResponse:
+async def oauth_logout(request: Request) -> RedirectResponse | JSONResponse:
     """Browser OAuth logout — invalidate session and revoke refresh token.
 
     Issue #626 finding 4: prior implementation only cleared the cookie,
@@ -523,13 +581,30 @@ async def oauth_logout(request: Request) -> RedirectResponse:
          if it leaks.
       5. Clears the cookie on the response.
 
+    Method is POST-only at the route layer to defeat passive CSRF (PR #758
+    finding 5). Origin / Referer headers are also validated against the
+    configured ``mcp_server_url`` when present, blocking same-method-but-
+    cross-origin form submissions.
+
     Query parameters:
         next: Optional URL to redirect to after logout (default: /oauth/login)
     """
-    next_url = request.query_params.get("next", "/oauth/login")
+    next_url = _safe_next_url(request.query_params.get("next"), "/oauth/login")
     session_id = request.cookies.get("mcp_session")
 
     oauth_ctx = getattr(request.app.state, "oauth_context", None)
+
+    # CSRF check: when Origin or Referer is present, host must match the
+    # MCP server's own host. Per OWASP CSRF cheat sheet, we allow the
+    # request through when neither header is present (some user agents
+    # strip both for privacy on same-origin POST).
+    if oauth_ctx and not _origin_matches_self(request, oauth_ctx):
+        logger.warning(
+            "Logout blocked: cross-origin request from %s",
+            request.headers.get("origin") or request.headers.get("referer"),
+        )
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     storage = oauth_ctx.get("storage") if oauth_ctx else None
 
     if session_id and storage and oauth_ctx:
@@ -563,8 +638,12 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
     of deleting the local copy, and we don't want logout to error if the
     IdP is unreachable or doesn't advertise a revocation endpoint.
     """
+    # Production oauth_context nests config under "config" (see app.py
+    # starlette_lifespan). A flat shape is also accepted for tests and
+    # historical callers.
+    cfg = oauth_ctx.get("config") or oauth_ctx
     try:
-        discovery_url = oauth_ctx.get("discovery_url") or os.getenv(
+        discovery_url = cfg.get("discovery_url") or os.getenv(
             "OIDC_DISCOVERY_URL",
             f"{os.getenv('NEXTCLOUD_HOST', '')}/.well-known/openid-configuration",
         )
@@ -580,10 +659,8 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
                 logger.debug("IdP advertises no revocation_endpoint; skipping")
                 return
 
-            client_id = oauth_ctx.get("client_id") or os.getenv("OIDC_CLIENT_ID")
-            client_secret = oauth_ctx.get("client_secret") or os.getenv(
-                "OIDC_CLIENT_SECRET"
-            )
+            client_id = cfg.get("client_id") or os.getenv("OIDC_CLIENT_ID")
+            client_secret = cfg.get("client_secret") or os.getenv("OIDC_CLIENT_SECRET")
             if not (client_id and client_secret):
                 logger.debug("No OIDC client credentials available for revocation")
                 return

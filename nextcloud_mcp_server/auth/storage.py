@@ -31,7 +31,7 @@ import os
 import socket
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiosqlite
 import anyio
@@ -205,11 +205,11 @@ class RefreshTokenStorage:
         self,
         user_id: str,
         refresh_token: str,
-        expires_at: Optional[int] = None,
+        expires_at: int | None = None,
         flow_type: str = "hybrid",
         token_audience: str = "nextcloud",
-        provisioning_client_id: Optional[str] = None,
-        scopes: Optional[list[str]] = None,
+        provisioning_client_id: str | None = None,
+        scopes: list[str] | None = None,
     ) -> None:
         """
         Store encrypted refresh token for user.
@@ -313,7 +313,7 @@ class RefreshTokenStorage:
 
         logger.debug(f"Cached user profile for {user_id}")
 
-    async def get_user_profile(self, user_id: str) -> Optional[dict[str, Any]]:
+    async def get_user_profile(self, user_id: str) -> dict[str, Any] | None:
         """
         Retrieve cached user profile data.
 
@@ -351,7 +351,7 @@ class RefreshTokenStorage:
 
         return profile_data
 
-    async def get_refresh_token(self, user_id: str) -> Optional[dict]:
+    async def get_refresh_token(self, user_id: str) -> dict | None:
         """
         Retrieve and decrypt refresh token for user.
 
@@ -444,7 +444,7 @@ class RefreshTokenStorage:
 
     async def get_refresh_token_by_provisioning_client_id(
         self, provisioning_client_id: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve and decrypt refresh token by provisioning_client_id (state parameter).
 
@@ -617,8 +617,8 @@ class RefreshTokenStorage:
         client_id_issued_at: int,
         client_secret_expires_at: int,
         redirect_uris: list[str],
-        registration_access_token: Optional[str] = None,
-        registration_client_uri: Optional[str] = None,
+        registration_access_token: str | None = None,
+        registration_client_uri: str | None = None,
     ) -> None:
         """
         Store encrypted OAuth client credentials.
@@ -689,7 +689,7 @@ class RefreshTokenStorage:
             auth_method="oauth",
         )
 
-    async def get_oauth_client(self) -> Optional[dict]:
+    async def get_oauth_client(self) -> dict | None:
         """
         Retrieve and decrypt OAuth client credentials.
 
@@ -827,9 +827,9 @@ class RefreshTokenStorage:
         self,
         event: str,
         user_id: str,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        auth_method: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        auth_method: str | None = None,
     ) -> None:
         """
         Log operation to audit log.
@@ -866,8 +866,8 @@ class RefreshTokenStorage:
 
     async def get_audit_logs(
         self,
-        user_id: Optional[str] = None,
-        since: Optional[int] = None,
+        user_id: str | None = None,
+        since: int | None = None,
         limit: int = 100,
     ) -> list[dict]:
         """
@@ -909,14 +909,14 @@ class RefreshTokenStorage:
         self,
         session_id: str,
         client_redirect_uri: str,
-        state: Optional[str] = None,
-        code_challenge: Optional[str] = None,
-        code_challenge_method: Optional[str] = None,
-        mcp_authorization_code: Optional[str] = None,
-        client_id: Optional[str] = None,
+        state: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        mcp_authorization_code: str | None = None,
+        client_id: str | None = None,
         flow_type: str = "hybrid",
         is_provisioning: bool = False,
-        requested_scopes: Optional[str] = None,
+        requested_scopes: str | None = None,
         ttl_seconds: int = 600,  # 10 minutes
     ) -> None:
         """
@@ -969,7 +969,7 @@ class RefreshTokenStorage:
 
         logger.debug(f"Stored OAuth session {session_id} (expires in {ttl_seconds}s)")
 
-    async def get_oauth_session(self, session_id: str) -> Optional[dict]:
+    async def get_oauth_session(self, session_id: str) -> dict | None:
         """
         Retrieve OAuth session by session ID.
 
@@ -1001,7 +1001,7 @@ class RefreshTokenStorage:
 
     async def get_oauth_session_by_mcp_code(
         self, mcp_authorization_code: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve OAuth session by MCP authorization code.
 
@@ -1037,9 +1037,9 @@ class RefreshTokenStorage:
     async def update_oauth_session(
         self,
         session_id: str,
-        user_id: Optional[str] = None,
-        idp_access_token: Optional[str] = None,
-        idp_refresh_token: Optional[str] = None,
+        user_id: str | None = None,
+        idp_access_token: str | None = None,
+        idp_refresh_token: str | None = None,
     ) -> bool:
         """
         Update OAuth session with IdP token data.
@@ -1174,7 +1174,7 @@ class RefreshTokenStorage:
             ttl_seconds,
         )
 
-    async def get_browser_session_user(self, session_id: str) -> Optional[str]:
+    async def get_browser_session_user(self, session_id: str) -> str | None:
         """Look up the user_id bound to a browser session_id, or None.
 
         Returns None when the session is unknown or expired. Expired rows
@@ -1215,6 +1215,31 @@ class RefreshTokenStorage:
 
         if deleted:
             logger.debug("Deleted browser session %s", session_id[:8])
+        return deleted
+
+    async def cleanup_expired_browser_sessions(self) -> int:
+        """Remove expired ``browser_sessions`` rows.
+
+        Returns the number of rows deleted. Called by the periodic cleanup
+        task in ``app.py``. Without this users who never explicitly log out
+        leave session rows behind that only get deleted lazily on lookup
+        (PR #758 finding 6).
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM browser_sessions WHERE expires_at < ?", (now,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+
+        if deleted > 0:
+            logger.info("Cleaned up %s expired browser session(s)", deleted)
+
         return deleted
 
     # ============================================================================
@@ -1396,7 +1421,7 @@ class RefreshTokenStorage:
             auth_method="app_password",
         )
 
-    async def get_app_password(self, user_id: str) -> Optional[str]:
+    async def get_app_password(self, user_id: str) -> str | None:
         """
         Retrieve and decrypt app password for a user.
 

@@ -46,12 +46,20 @@ async def storage():
         yield s
 
 
-def _build_request(*, cookie: str | None, oauth_context: dict | None):
+def _build_request(
+    *,
+    cookie: str | None,
+    oauth_context: dict | None,
+    headers: dict | None = None,
+):
     """Build a minimal Starlette-style request stub for oauth_logout."""
     request = MagicMock()
     request.query_params = {}
     request.cookies = {"mcp_session": cookie} if cookie else {}
     request.app.state.oauth_context = oauth_context
+    # Headers default to empty so the CSRF check sees neither Origin nor
+    # Referer (allowed by policy — see _origin_matches_self).
+    request.headers = headers or {}
     return request
 
 
@@ -69,7 +77,7 @@ async def test_logout_deletes_refresh_token_and_session(storage):
 
     request = _build_request(
         cookie="sid-1",
-        oauth_context={"storage": storage, "discovery_url": None},
+        oauth_context={"storage": storage, "config": {"discovery_url": None}},
     )
 
     with patch(
@@ -93,7 +101,10 @@ async def test_logout_calls_revocation_when_refresh_token_present(storage):
     revoke = AsyncMock()
     request = _build_request(
         cookie="sid-2",
-        oauth_context={"storage": storage, "discovery_url": "http://idp/.well-known"},
+        oauth_context={
+            "storage": storage,
+            "config": {"discovery_url": "http://idp/.well-known"},
+        },
     )
 
     with patch(
@@ -111,7 +122,8 @@ async def test_logout_calls_revocation_when_refresh_token_present(storage):
 async def test_logout_no_session_cookie_returns_302(storage):
     """Without a cookie, logout still 302s and doesn't touch storage."""
     request = _build_request(
-        cookie=None, oauth_context={"storage": storage, "discovery_url": None}
+        cookie=None,
+        oauth_context={"storage": storage, "config": {"discovery_url": None}},
     )
     response = await oauth_logout(request)
     assert response.status_code == 302
@@ -128,10 +140,76 @@ async def test_logout_swallows_storage_errors(storage):
 
     request = _build_request(
         cookie="sid-3",
-        oauth_context={"storage": broken_storage, "discovery_url": None},
+        oauth_context={
+            "storage": broken_storage,
+            "config": {"discovery_url": None},
+        },
     )
     response = await oauth_logout(request)
     assert response.status_code == 302  # logout still succeeds
+
+
+async def test_logout_blocks_cross_origin_post(storage):
+    """POST from a foreign Origin must be rejected with 403 (PR #758 finding 5)."""
+    await storage.create_browser_session(session_id="sid-X", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-X",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+        headers={"origin": "https://evil.example.com"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 403
+    # Session row must NOT have been deleted.
+    assert await storage.get_browser_session_user("sid-X") == "alice"
+
+
+async def test_logout_allows_same_origin_post(storage):
+    """POST with matching Origin proceeds normally."""
+    await storage.create_browser_session(session_id="sid-Y", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-Y",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+        headers={"origin": "https://mcp.example.com"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 302
+    assert await storage.get_browser_session_user("sid-Y") is None
+
+
+async def test_logout_allows_referer_when_origin_missing(storage):
+    """Some browsers strip Origin on POST; Referer is the fallback signal."""
+    await storage.create_browser_session(session_id="sid-Z", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-Z",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+        headers={"referer": "https://mcp.example.com/app"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 302
 
 
 async def test_logout_handles_session_with_no_refresh_token(storage):
@@ -141,7 +219,7 @@ async def test_logout_handles_session_with_no_refresh_token(storage):
     revoke = AsyncMock()
     request = _build_request(
         cookie="sid-4",
-        oauth_context={"storage": storage, "discovery_url": None},
+        oauth_context={"storage": storage, "config": {"discovery_url": None}},
     )
     with patch(
         "nextcloud_mcp_server.auth.browser_oauth_routes._revoke_refresh_token_at_idp",
@@ -197,9 +275,11 @@ async def test_revoke_helper_posts_to_revocation_endpoint():
     ):
         await _revoke_refresh_token_at_idp(
             {
-                "discovery_url": discovery_url,
-                "client_id": "test-client",
-                "client_secret": "test-secret",
+                "config": {
+                    "discovery_url": discovery_url,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                }
             },
             "rt-secret",
         )
@@ -232,9 +312,11 @@ async def test_revoke_helper_skips_when_no_revocation_endpoint():
         # Returns None and does not raise
         result = await _revoke_refresh_token_at_idp(
             {
-                "discovery_url": discovery_url,
-                "client_id": "x",
-                "client_secret": "y",
+                "config": {
+                    "discovery_url": discovery_url,
+                    "client_id": "x",
+                    "client_secret": "y",
+                }
             },
             "rt",
         )
@@ -259,9 +341,11 @@ async def test_revoke_helper_silent_on_idp_error():
     ):
         result = await _revoke_refresh_token_at_idp(
             {
-                "discovery_url": "http://x/.well-known",
-                "client_id": "x",
-                "client_secret": "y",
+                "config": {
+                    "discovery_url": "http://x/.well-known",
+                    "client_id": "x",
+                    "client_secret": "y",
+                }
             },
             "rt",
         )

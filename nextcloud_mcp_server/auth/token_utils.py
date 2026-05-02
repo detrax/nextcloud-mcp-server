@@ -5,6 +5,7 @@ between server/ and auth/ layers.
 """
 
 import logging
+import time
 from typing import Any
 
 import jwt
@@ -18,8 +19,35 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+# OIDC discovery + JWKS caches keyed by URL → (expires_at, data). Mirrors the
+# pattern in oauth_routes._get_cached_discovery so that ID-token verification
+# during the OAuth callback doesn't make two extra round-trips per login (PR
+# #758 finding 4). 5-minute TTL matches oauth_routes.
+_discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_OIDC_CACHE_TTL = 300
+
+
 class IdTokenVerificationError(Exception):
     """Raised when an OIDC ID token fails signature or claim verification."""
+
+
+async def _get_cached(
+    cache: dict[str, tuple[float, dict[str, Any]]], url: str
+) -> dict[str, Any]:
+    """Return cached JSON response for *url* or fetch + cache on miss/expiry."""
+    now = time.time()
+    entry = cache.get(url)
+    if entry is not None:
+        expires_at, data = entry
+        if now < expires_at:
+            return data
+    async with nextcloud_httpx_client() as http_client:
+        response = await http_client.get(url)
+        response.raise_for_status()
+        data = response.json()
+    cache[url] = (now + _OIDC_CACHE_TTL, data)
+    return data
 
 
 async def verify_id_token(
@@ -62,21 +90,16 @@ async def verify_id_token(
         raise IdTokenVerificationError("ID token missing from token response")
 
     try:
-        async with nextcloud_httpx_client() as http_client:
-            discovery_response = await http_client.get(discovery_url)
-            discovery_response.raise_for_status()
-            discovery = discovery_response.json()
+        discovery = await _get_cached(_discovery_cache, discovery_url)
 
-            issuer = discovery.get("issuer")
-            jwks_uri = discovery.get("jwks_uri")
-            if not issuer or not jwks_uri:
-                raise IdTokenVerificationError(
-                    "OIDC discovery response missing issuer or jwks_uri"
-                )
+        issuer = discovery.get("issuer")
+        jwks_uri = discovery.get("jwks_uri")
+        if not issuer or not jwks_uri:
+            raise IdTokenVerificationError(
+                "OIDC discovery response missing issuer or jwks_uri"
+            )
 
-            jwks_response = await http_client.get(jwks_uri)
-            jwks_response.raise_for_status()
-            jwks_data = jwks_response.json()
+        jwks_data = await _get_cached(_jwks_cache, jwks_uri)
     except IdTokenVerificationError:
         raise
     except Exception as e:
@@ -97,10 +120,18 @@ async def verify_id_token(
                 f"No JWKS key matches ID token kid {kid!r}"
             ) from e
 
+        # PyJWT verifies the JWT with the algorithm declared in its header,
+        # cross-checked against this allowlist (so an attacker can't downgrade
+        # to ``none`` or HMAC). The allowlist covers the OIDC algorithms
+        # most cloud IdPs ship by default:
+        #   - RS256: Nextcloud user_oidc, Keycloak default, Auth0, Google.
+        #   - PS256: Azure AD on newer keys.
+        #   - ES256: some Keycloak realms, AWS Cognito user pools.
+        # Symmetric (HSxxx) and ``none`` are intentionally absent.
         payload: dict[str, Any] = jwt.decode(
             id_token,
             signing_key.key,
-            algorithms=["RS256"],
+            algorithms=["RS256", "PS256", "ES256"],
             audience=expected_audience,
             issuer=issuer,
             options={

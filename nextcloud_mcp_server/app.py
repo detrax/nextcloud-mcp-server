@@ -1354,13 +1354,16 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 storage = await get_shared_storage()
                 count = await storage.delete_expired_login_flow_sessions()
                 if count:
-                    logger.info(f"Cleaned up {count} expired login flow sessions")
+                    logger.info("Cleaned up %s expired login flow sessions", count)
+                # Browser session rows are otherwise only cleaned up lazily
+                # when a user revisits — PR #758 finding 6.
+                await storage.cleanup_expired_browser_sessions()
                 # Also clean up expired AS proxy codes/sessions
                 _cleanup_expired_proxy_codes()
                 # Clean up expired web provision sessions
                 _cleanup_expired_provision_sessions()
             except Exception as e:
-                logger.warning(f"Login flow cleanup error: {e}")
+                logger.warning("Login flow cleanup error: %s", e)
             await anyio.sleep(3600)  # Every hour
 
     @asynccontextmanager
@@ -2242,8 +2245,10 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                 name="oauth_login_callback",
             )
         )
+        # POST-only: defends against passive CSRF (e.g. <img src="…/logout">)
+        # — see PR #758 finding 5.
         routes.append(
-            Route("/oauth/logout", oauth_logout, methods=["GET"], name="oauth_logout")
+            Route("/oauth/logout", oauth_logout, methods=["POST"], name="oauth_logout")
         )
         logger.info(
             "Browser OAuth routes enabled: /oauth/login, /oauth/login-callback (legacy), /oauth/logout"

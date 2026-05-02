@@ -18,12 +18,23 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from nextcloud_mcp_server.auth import token_utils
 from nextcloud_mcp_server.auth.token_utils import (
     IdTokenVerificationError,
     verify_id_token,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_oidc_caches():
+    """Reset the discovery+JWKS caches so tests don't share fetched data."""
+    token_utils._discovery_cache.clear()
+    token_utils._jwks_cache.clear()
+    yield
+    token_utils._discovery_cache.clear()
+    token_utils._jwks_cache.clear()
 
 
 # Generated once per process — RSA keypair generation is slow.
@@ -231,3 +242,48 @@ async def test_verify_id_token_missing_token_rejected():
         await verify_id_token(
             "", discovery_url=DISCOVERY_URL, expected_audience="test-client"
         )
+
+
+async def test_verify_id_token_caches_discovery_and_jwks():
+    """Discovery + JWKS must be cached: two verifications, one fetch each.
+
+    Pins the fix for PR #758 finding 4 — every login previously made two
+    extra HTTP round-trips to the IdP for the same metadata.
+    """
+    fetches: dict[str, int] = {}
+
+    def counting_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        fetches[url] = fetches.get(url, 0) + 1
+        return _idp_handler(request)
+
+    transport = httpx.MockTransport(counting_handler)
+
+    def fake_client(**kwargs):
+        kwargs["transport"] = transport
+        return httpx.AsyncClient(**kwargs)
+
+    now = int(time.time())
+    token = _sign(
+        {
+            "iss": ISSUER,
+            "aud": "test-client",
+            "sub": "alice",
+            "iat": now,
+            "exp": now + 60,
+        }
+    )
+
+    with patch(
+        "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
+        side_effect=fake_client,
+    ):
+        await verify_id_token(
+            token, discovery_url=DISCOVERY_URL, expected_audience="test-client"
+        )
+        await verify_id_token(
+            token, discovery_url=DISCOVERY_URL, expected_audience="test-client"
+        )
+
+    assert fetches.get(DISCOVERY_URL) == 1, "discovery fetched more than once"
+    assert fetches.get(JWKS_URI) == 1, "JWKS fetched more than once"

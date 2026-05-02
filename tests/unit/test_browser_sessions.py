@@ -73,3 +73,27 @@ async def test_replace_existing_session_id(storage):
     await storage.create_browser_session(session_id=sid, user_id="bob")
 
     assert await storage.get_browser_session_user(sid) == "bob"
+
+
+async def test_cleanup_expired_browser_sessions(storage):
+    """Periodic cleanup removes expired rows but leaves fresh ones (PR #758 finding 6)."""
+    fresh_sid = secrets.token_urlsafe(32)
+    expired_sid = secrets.token_urlsafe(32)
+
+    await storage.create_browser_session(
+        session_id=fresh_sid, user_id="alice", ttl_seconds=3600
+    )
+    # ttl_seconds=-2 → expires_at strictly in the past (cleanup uses < now,
+    # so it must be actually less, not equal).
+    await storage.create_browser_session(
+        session_id=expired_sid, user_id="bob", ttl_seconds=-2
+    )
+
+    deleted = await storage.cleanup_expired_browser_sessions()
+    assert deleted == 1
+
+    # Fresh row survives, expired row is gone
+    assert await storage.get_browser_session_user(fresh_sid) == "alice"
+    assert await storage.get_browser_session_user(expired_sid) is None
+    # Calling again should be a no-op
+    assert await storage.cleanup_expired_browser_sessions() == 0

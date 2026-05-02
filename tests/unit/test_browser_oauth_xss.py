@@ -1,0 +1,121 @@
+"""Regression tests for HTML XSS in browser OAuth error responses.
+
+The reviewer on PR #758 flagged that ``oauth_login_callback`` interpolated
+IdP-controlled and query-parameter-controlled text into HTMLResponse bodies
+without escaping. These tests pin the html_escape behavior so the
+vulnerability cannot regress silently.
+"""
+
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
+from cryptography.fernet import Fernet
+
+from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
+from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+
+pytestmark = pytest.mark.unit
+
+
+XSS_PAYLOAD = "<script>alert(1)</script>"
+
+
+@pytest.fixture
+async def storage():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "xss.db"
+        s = RefreshTokenStorage(
+            db_path=str(db_path), encryption_key=Fernet.generate_key().decode()
+        )
+        await s.initialize()
+        yield s
+
+
+def _build_request(*, query_params: dict, oauth_context: dict | None = None):
+    request = MagicMock()
+    request.query_params = query_params
+    request.cookies = {}
+    request.app.state.oauth_context = oauth_context
+    request.url_for = MagicMock(return_value="/oauth/login")
+    return request
+
+
+async def test_callback_escapes_error_query_params(storage):
+    """`error` and `error_description` are attacker-controlled — must be escaped."""
+    request = _build_request(
+        query_params={
+            "error": XSS_PAYLOAD,
+            "error_description": XSS_PAYLOAD,
+        },
+        oauth_context={"storage": storage, "config": {}},
+    )
+
+    response = await oauth_login_callback(request)
+    body = response.body.decode()
+
+    assert XSS_PAYLOAD not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+async def test_callback_escapes_idp_http_error_body(storage):
+    """IdP-returned HTTPError body must be HTML-escaped before reflection."""
+    discovery = {"token_endpoint": "http://idp.example/token"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/.well-known/openid-configuration"):
+            return httpx.Response(
+                200,
+                content=json.dumps(discovery).encode(),
+                headers={"content-type": "application/json"},
+            )
+        if str(request.url) == "http://idp.example/token":
+            return httpx.Response(400, content=XSS_PAYLOAD.encode())
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(**kwargs):
+        kwargs["transport"] = transport
+        return httpx.AsyncClient(**kwargs)
+
+    # Pre-populate the oauth_session row that the callback expects
+    await storage.store_oauth_session(
+        session_id="state-xss",
+        client_id="browser-ui",
+        client_redirect_uri="/app",
+        state="state-xss",
+        code_challenge="cc",
+        code_challenge_method="S256",
+        mcp_authorization_code="cv",
+        flow_type="browser",
+        ttl_seconds=600,
+    )
+
+    request = _build_request(
+        query_params={"code": "abc", "state": "state-xss"},
+        oauth_context={
+            "storage": storage,
+            "oauth_client": None,
+            "config": {
+                "discovery_url": "http://idp.example/.well-known/openid-configuration",
+                "client_id": "test",
+                "client_secret": "secret",
+                "mcp_server_url": "http://localhost",
+            },
+        },
+    )
+
+    with patch(
+        "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
+        side_effect=fake_client,
+    ):
+        response = await oauth_login_callback(request)
+
+    body = response.body.decode()
+    assert response.status_code == 500
+    assert XSS_PAYLOAD not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
