@@ -32,6 +32,23 @@ from ..http import nextcloud_httpx_client
 logger = logging.getLogger(__name__)
 
 
+def _normalise_origin(raw: str) -> tuple[str, str, int | None]:
+    """Return (scheme, hostname, port) with default HTTP/HTTPS ports stripped.
+
+    Browsers omit default ports in Origin headers (RFC 6454 §6.2), so a
+    raw netloc string comparison falsely rejects requests whenever
+    ``mcp_server_url`` is configured with an explicit ``:443`` / ``:80``
+    (or vice versa).
+    """
+    parsed = parse_url(raw)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    port = parsed.port
+    if (scheme == "https" and port == 443) or (scheme == "http" and port == 80):
+        port = None
+    return (scheme, hostname, port)
+
+
 def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
     """Return True when Origin/Referer is missing or matches our own host.
 
@@ -39,8 +56,11 @@ def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
     (PR #758 finding 5). Per OWASP CSRF cheat sheet, the policy is:
       - If neither Origin nor Referer is set, allow (same-origin POST in
         privacy-conscious browsers may strip both).
-      - Otherwise, the netloc of the first present header must equal the
-        netloc of the configured ``mcp_server_url``.
+      - Otherwise, the (scheme, hostname, port) tuple of the first present
+        header must equal the same tuple of the configured
+        ``mcp_server_url``. Default ports (80/443) are normalised away
+        before comparison so RFC-6454-compliant browsers — which omit
+        default ports in Origin — aren't rejected.
     """
     cfg = oauth_ctx.get("config") or oauth_ctx
     mcp_server_url = cfg.get("mcp_server_url")
@@ -48,11 +68,11 @@ def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
         # Mis-configured deployment — fail open rather than break logout.
         return True
 
-    expected = parse_url(mcp_server_url).netloc.lower()
+    expected = _normalise_origin(mcp_server_url)
     raw = request.headers.get("origin") or request.headers.get("referer")
     if not raw:
         return True
-    return parse_url(raw).netloc.lower() == expected
+    return _normalise_origin(raw) == expected
 
 
 def _safe_next_url(raw: str | None, default: str) -> str:
@@ -78,19 +98,19 @@ def _should_use_secure_cookies() -> bool:
     """Determine if cookies should have the Secure flag.
 
     Reads ``settings.cookie_secure`` first (set via the ``COOKIE_SECURE``
-    env var). Falls back to auto-detect from the ``nextcloud_host`` scheme
-    when unset.
-
-    Returns:
-        True if cookies should be secure (HTTPS), False otherwise
+    env var). Falls back to auto-detecting from the MCP server's own URL
+    scheme — the cookie is issued by THIS server, so the Secure flag must
+    reflect THIS server's transport, not Nextcloud's. (Split-scheme
+    deployments — HTTPS Nextcloud + plain-HTTP MCP sidecar, or vice
+    versa — would otherwise get the wrong answer.)
     """
     settings = get_settings()
     if settings.cookie_secure is not None:
         # Dynaconf auto-coerces "true"/"false" → bool but "1"/"0" → int;
         # bool() normalises both.
         return bool(settings.cookie_secure)
-    nextcloud_host = settings.nextcloud_host or ""
-    return nextcloud_host.startswith("https://")
+    mcp_server_url = settings.nextcloud_mcp_server_url or ""
+    return mcp_server_url.startswith("https://")
 
 
 async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
@@ -327,8 +347,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         # read-time as defense-in-depth (issue #758 finding 3). The session
         # row could have been written by an older code path or reused.
         next_url = _safe_next_url(oauth_session.get("client_redirect_uri"), "/app")
-        # Clean up the temporary session
-        # Note: We don't have delete_oauth_session method, but it will expire after TTL
+        # One-time-use session: delete eagerly so a replayed callback can't
+        # be processed and so the oauth_sessions table doesn't accumulate
+        # completed-but-not-yet-expired browser-login rows.
+        await storage.delete_oauth_session(state)
 
     # Exchange authorization code for tokens
     mcp_server_url = oauth_config["mcp_server_url"]

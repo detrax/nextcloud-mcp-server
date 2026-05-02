@@ -192,6 +192,74 @@ async def test_logout_allows_same_origin_post(storage):
     assert await storage.get_browser_session_user("sid-Y") is None
 
 
+async def test_logout_allows_same_origin_post_with_explicit_default_port(storage):
+    """mcp_server_url has explicit :443; browser Origin omits the port.
+
+    RFC 6454 §6.2: browsers omit default ports in Origin headers. The
+    netloc string ``mcp.example.com:443`` would never match ``mcp.example.com``
+    without port normalisation, blocking every legitimate logout.
+    """
+    await storage.create_browser_session(session_id="sid-PE", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-PE",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com:443",
+                "discovery_url": None,
+            },
+        },
+        headers={"origin": "https://mcp.example.com"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 302
+    assert await storage.get_browser_session_user("sid-PE") is None
+
+
+async def test_logout_allows_same_origin_post_with_default_port_in_origin(storage):
+    """Symmetric case: config omits port, Origin includes :443."""
+    await storage.create_browser_session(session_id="sid-PI", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-PI",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+        headers={"origin": "https://mcp.example.com:443"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 302
+    assert await storage.get_browser_session_user("sid-PI") is None
+
+
+async def test_logout_blocks_scheme_mismatch(storage):
+    """Same hostname but different scheme must be treated as cross-origin."""
+    await storage.create_browser_session(session_id="sid-SC", user_id="alice")
+
+    request = _build_request(
+        cookie="sid-SC",
+        oauth_context={
+            "storage": storage,
+            "config": {
+                "mcp_server_url": "https://mcp.example.com",
+                "discovery_url": None,
+            },
+        },
+        headers={"origin": "http://mcp.example.com"},
+    )
+
+    response = await oauth_logout(request)
+    assert response.status_code == 403
+    assert await storage.get_browser_session_user("sid-SC") == "alice"
+
+
 async def test_logout_allows_referer_when_origin_missing(storage):
     """Some browsers strip Origin on POST; Referer is the fallback signal."""
     await storage.create_browser_session(session_id="sid-Z", user_id="alice")

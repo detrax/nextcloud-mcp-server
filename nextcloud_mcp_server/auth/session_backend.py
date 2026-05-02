@@ -94,5 +94,5 @@ class SessionAuthBackend(AuthenticationBackend):
             return AuthCredentials(["authenticated"]), SimpleUser(user_id)
 
         except Exception as e:
-            logger.warning(f"Session validation error: {e}")
+            logger.warning("Session validation error: %s", e)
             return None

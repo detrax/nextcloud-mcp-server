@@ -14,7 +14,7 @@ from mcp.server.fastmcp import Context
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +80,9 @@ def require_provisioning(func: Callable) -> Callable:
                 )
             )
 
-        # Check provisioning status
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
+        # Check provisioning status — share the process-wide singleton
+        # rather than initialising a new sqlite handle per tool call.
+        storage = await get_shared_storage()
 
         refresh_data = await storage.get_refresh_token(user_id)
 
@@ -149,9 +149,8 @@ def require_provisioning_or_suggest(func: Callable) -> Callable:
                 user_id = access_token.resource if access_token else None
 
                 if user_id:
-                    # Check provisioning status
-                    storage = RefreshTokenStorage.from_env()
-                    await storage.initialize()
+                    # Check provisioning status using the shared singleton.
+                    storage = await get_shared_storage()
 
                     refresh_data = await storage.get_refresh_token(user_id)
 

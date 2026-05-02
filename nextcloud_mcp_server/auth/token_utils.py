@@ -115,10 +115,24 @@ async def verify_id_token(
             raise IdTokenVerificationError("ID token header missing 'kid'")
         try:
             signing_key = jwks[kid]
-        except KeyError as e:
-            raise IdTokenVerificationError(
-                f"No JWKS key matches ID token kid {kid!r}"
-            ) from e
+        except KeyError:
+            # Cache miss may indicate IdP key rotation. Refresh JWKS once
+            # before giving up, per OIDC core §10.1.1: when an unrecognised
+            # `kid` arrives the relying party should refetch the JWKS rather
+            # than waiting for cache TTL to elapse.
+            _jwks_cache.pop(jwks_uri, None)
+            try:
+                jwks_data = await _get_cached(_jwks_cache, jwks_uri)
+                jwks = PyJWKSet.from_dict(jwks_data)
+                signing_key = jwks[kid]
+            except KeyError as e:
+                raise IdTokenVerificationError(
+                    f"No JWKS key matches ID token kid {kid!r}"
+                ) from e
+            except Exception as e:
+                raise IdTokenVerificationError(
+                    f"Failed to refresh JWKS after kid miss: {e}"
+                ) from e
 
         # PyJWT verifies the JWT with the algorithm declared in its header,
         # cross-checked against this allowlist (so an attacker can't downgrade
@@ -158,7 +172,7 @@ async def verify_id_token(
     return payload
 
 
-async def extract_user_id_from_token(ctx: Context) -> str:
+async def extract_user_id_from_token(_ctx: Context) -> str:
     """Extract user_id from the verified MCP access token.
 
     Reads the `sub` claim from `AccessToken.resource`, which is populated by
@@ -168,7 +182,10 @@ async def extract_user_id_from_token(ctx: Context) -> str:
     identity claim.
 
     Args:
-        ctx: MCP context with access token (unused — kept for the public API)
+        _ctx: MCP context with access token. Intentionally unused — kept on
+            the public signature so call sites can pass the FastMCP Context
+            they already hold without rewriting; identity is read from the
+            verifier-populated AccessToken via get_access_token().
 
     Returns:
         user_id from the verified token, or "default_user" when no token is
