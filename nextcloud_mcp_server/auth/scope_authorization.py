@@ -168,11 +168,19 @@ def require_scopes(*required_scopes: str):
                         # elicitation isn't told to call the auth tool
                         # again (which would loop).
                         if elicit_result == "accepted":
+                            # Note: stored-scope lookups are cached for
+                            # _SCOPE_CACHE_TTL (5 min). Both nc_auth_provision_access
+                            # and the Astrolabe web route invalidate the cache when
+                            # they finish, but if the LFv2 poller is still in-flight
+                            # at acknowledge-time the next retry can still hit the
+                            # stale cache — hence the "wait a moment" qualifier.
                             error_msg = (
                                 f"Access denied to {func_name}: Nextcloud "
                                 f"access was not provisioned at the time of "
                                 f"this call. If you just completed "
-                                f"provisioning, please retry the request."
+                                f"provisioning, please retry the request — "
+                                f"if it still fails, provisioning may still be "
+                                f"completing; wait a moment and try again."
                             )
                         else:
                             error_msg = (

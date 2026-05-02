@@ -63,6 +63,20 @@ def test_astrolabe_settings_url_returns_none_when_unset():
         assert _astrolabe_settings_url() is None
 
 
+def test_astrolabe_settings_url_returns_none_when_scheme_missing(caplog):
+    """Bare hostname (no http:// or https://) → None + a warning so the operator
+    sees the misconfiguration instead of getting a silently-broken URL."""
+    fake = _fake_settings(host="internal-host:8080")
+    with patch("nextcloud_mcp_server.auth.elicitation.get_settings", return_value=fake):
+        with caplog.at_level("WARNING", logger="nextcloud_mcp_server.auth.elicitation"):
+            assert _astrolabe_settings_url() is None
+    assert any(
+        "missing an http:// or https://" in rec.message for rec in caplog.records
+    ), (
+        f"expected scheme-missing warning, got records={[r.message for r in caplog.records]}"
+    )
+
+
 async def test_present_provisioning_required_elicits_with_url():
     """When NC URL is set and the client supports elicitation, send the URL."""
     fake = _fake_settings(public_issuer_url="https://nc.example.com")

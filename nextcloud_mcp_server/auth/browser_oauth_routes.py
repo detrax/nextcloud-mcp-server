@@ -44,8 +44,9 @@ def _should_use_secure_cookies() -> bool:
     if explicit == "false":
         return False
 
-    # Auto-detect from NEXTCLOUD_HOST protocol
-    nextcloud_host = os.getenv("NEXTCLOUD_HOST", "")
+    # Auto-detect from NEXTCLOUD_HOST protocol (read via Settings for
+    # consistency with the rest of this file).
+    nextcloud_host = get_settings().nextcloud_host or ""
     return nextcloud_host.startswith("https://")
 
 

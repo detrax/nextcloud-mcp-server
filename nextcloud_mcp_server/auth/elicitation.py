@@ -5,6 +5,7 @@ when the client supports it, or falling back to returning the URL in a message.
 """
 
 import logging
+from typing import Any
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
@@ -45,7 +46,9 @@ def _astrolabe_settings_url() -> str | None:
 
     Prefers ``nextcloud_public_issuer_url`` (the browser-reachable public URL)
     over ``nextcloud_host`` (which may be an internal hostname in Docker
-    deployments). Returns None if neither is set.
+    deployments). Returns None if neither is set, or if the configured base
+    URL is missing an http:// or https:// scheme — in the latter case the
+    caller renders the tool-only fallback message instead of a broken link.
     """
     settings = get_settings()
     base = (
@@ -53,7 +56,68 @@ def _astrolabe_settings_url() -> str | None:
     ).strip()
     if not base:
         return None
+    if not base.startswith(("http://", "https://")):
+        # Bare hostname (e.g. "internal:8080") would silently produce a
+        # non-clickable URL. Surface the misconfiguration instead.
+        logger.warning(
+            "Cannot build Astrolabe settings URL: configured Nextcloud base URL "
+            "%r is missing an http:// or https:// scheme. Falling back to the "
+            "tool-only provisioning message.",
+            base,
+        )
+        return None
     return f"{base.rstrip('/')}{ASTROLABE_SETTINGS_PATH}"
+
+
+async def _run_elicit(
+    ctx: Context,
+    message: str,
+    schema: type[BaseModel],
+    *,
+    log_label: str,
+) -> tuple[str, Any]:
+    """Shared elicit-or-fallback flow used by all elicitation prompts.
+
+    Returns ``(outcome, result)`` where ``outcome`` is one of
+    ``"accepted"`` / ``"declined"`` / ``"cancelled"`` / ``"message_only"``.
+    ``result`` is the underlying ``ctx.elicit()`` return value when the
+    elicitation actually ran (any of the first three outcomes), else None.
+    Callers needing post-accept inspection (e.g. the data-acknowledged
+    warning in :func:`present_login_url`) read it from ``result``.
+    """
+    if not hasattr(ctx, "elicit"):
+        logger.debug(
+            "Elicitation not available on context — message_only fallback (%s)",
+            log_label,
+        )
+        return "message_only", None
+
+    try:
+        result = await ctx.elicit(message=message, schema=schema)
+    except NotImplementedError:
+        logger.debug(
+            "Elicitation not supported by client — message_only fallback (%s)",
+            log_label,
+        )
+        return "message_only", None
+    except Exception as e:
+        logger.warning(
+            "Elicitation failed unexpectedly for %s (%s: %s), "
+            "falling back to message_only",
+            log_label,
+            type(e).__name__,
+            e,
+        )
+        return "message_only", None
+
+    if result.action == "accept":
+        logger.info("User acknowledged %s", log_label)
+        return "accepted", result
+    if result.action == "decline":
+        logger.info("User declined %s", log_label)
+        return "declined", result
+    logger.info("User cancelled %s", log_label)
+    return "cancelled", result
 
 
 async def present_login_url(
@@ -84,44 +148,27 @@ async def present_login_url(
             f"Then check the box below and click OK."
         )
 
-    if not hasattr(ctx, "elicit"):
-        logger.debug(
-            "Elicitation not available (no elicit method), returning URL in message"
-        )
-        return "message_only"
+    outcome, result = await _run_elicit(
+        ctx,
+        message,
+        LoginFlowConfirmation,
+        log_label="login flow completion",
+    )
 
-    try:
-        result = await ctx.elicit(
-            message=message,
-            schema=LoginFlowConfirmation,
-        )
-
-        if result.action == "accept":
-            if hasattr(result, "data") and not result.data.acknowledged:  # type: ignore[union-attr]
-                logger.warning(
-                    "User accepted login flow without checking the acknowledged box — "
-                    "login completion will be verified via polling"
-                )
-            logger.info("User acknowledged login flow completion")
-            return "accepted"
-        elif result.action == "decline":
-            logger.info("User declined login flow")
-            return "declined"
-        else:
-            logger.info("User cancelled login flow")
-            return "cancelled"
-
-    except NotImplementedError:
-        # Elicitation not supported by this client/SDK - fall back to message
-        logger.debug("Elicitation not available, returning URL in message")
-        return "message_only"
-    except Exception as e:
+    if (
+        outcome == "accepted"
+        and result is not None
+        and hasattr(result, "data")
+        and not result.data.acknowledged
+    ):
+        # User clicked OK without ticking the box — login completion is still
+        # verified via the LFv2 poller, so we proceed but flag it.
         logger.warning(
-            "Elicitation failed unexpectedly (%s: %s), falling back to message",
-            type(e).__name__,
-            e,
+            "User accepted login flow without checking the acknowledged box — "
+            "login completion will be verified via polling"
         )
-        return "message_only"
+
+    return outcome
 
 
 async def present_provisioning_required(ctx: Context) -> str:
@@ -163,39 +210,10 @@ async def present_provisioning_required(ctx: Context) -> str:
             "Then check the box below and retry the original request."
         )
 
-    if not hasattr(ctx, "elicit"):
-        logger.debug(
-            "Elicitation not available on context — returning message_only "
-            "(plain ProvisioningRequiredError will surface to the caller)"
-        )
-        return "message_only"
-
-    try:
-        result = await ctx.elicit(
-            message=message,
-            schema=ProvisioningRequiredConfirmation,
-        )
-
-        if result.action == "accept":
-            logger.info("User acknowledged provisioning-required prompt")
-            return "accepted"
-        elif result.action == "decline":
-            logger.info("User declined provisioning-required prompt")
-            return "declined"
-        else:
-            logger.info("User cancelled provisioning-required prompt")
-            return "cancelled"
-
-    except NotImplementedError:
-        logger.debug(
-            "Elicitation not supported by client — falling back to plain error"
-        )
-        return "message_only"
-    except Exception as e:
-        logger.warning(
-            "Provisioning elicitation failed unexpectedly (%s: %s), "
-            "falling back to plain error",
-            type(e).__name__,
-            e,
-        )
-        return "message_only"
+    outcome, _ = await _run_elicit(
+        ctx,
+        message,
+        ProvisioningRequiredConfirmation,
+        log_label="provisioning-required prompt",
+    )
+    return outcome
