@@ -743,7 +743,7 @@ async def setup_oauth_config():
     # ADR-005: Unified Token Verifier with proper audience validation
     # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
     # Tokens are issued with the public URL, but OIDC discovery returns internal URL
-    public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    public_issuer_url = settings.nextcloud_public_issuer_url
     client_issuer = public_issuer_url if public_issuer_url else issuer
     # Get MCP server URL for audience validation
     mcp_server_url = os.getenv("NEXTCLOUD_MCP_SERVER_URL", "http://localhost:8000")
@@ -933,7 +933,7 @@ async def setup_oauth_config_for_multi_user_basic(
 
     # Use public issuer URL for JWT validation if set (handles Docker internal/external URL mismatch)
     # Tokens are issued with the public URL, but OIDC discovery returns internal URL
-    public_issuer_url = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL")
+    public_issuer_url = settings.nextcloud_public_issuer_url
     client_issuer = public_issuer_url if public_issuer_url else issuer
 
     # Update settings with discovered values for UnifiedTokenVerifier

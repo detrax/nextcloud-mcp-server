@@ -151,13 +151,60 @@ def require_scopes(*required_scopes: str):
                     stored_scopes = await _get_stored_scopes(user_id)
 
                     if stored_scopes is None:
-                        # No stored app password → require provisioning
-                        error_msg = (
-                            f"Access denied to {func_name}: "
-                            f"Nextcloud access not provisioned. "
-                            f"Please call 'nc_auth_provision_access' first."
+                        # No stored app password → require provisioning. Try to
+                        # elicit a clickable Astrolabe / Login-Flow-v2 link so
+                        # the user has somewhere to click; the elicit helper
+                        # silently falls back when the client lacks support.
+                        from nextcloud_mcp_server.auth.elicitation import (  # noqa: PLC0415
+                            present_provisioning_required,
                         )
-                        logger.warning(error_msg)
+
+                        elicit_result = await present_provisioning_required(ctx)
+
+                        # Always raise — the decorator can't safely re-check
+                        # stored scopes mid-call (TTL cache, plus the LFv2
+                        # poller may still be running). Only the message
+                        # changes so an LLM that just acknowledged the
+                        # elicitation isn't told to call the auth tool
+                        # again (which would loop).
+                        if elicit_result == "accepted":
+                            # Note: stored-scope lookups are cached for
+                            # _SCOPE_CACHE_TTL (5 min). All three provisioning
+                            # paths invalidate the cache on completion: the
+                            # in-tool poller in nc_auth_check_status
+                            # (auth_tools.py), the Astrolabe web route
+                            # (provision_routes.py), and the BasicAuth REST
+                            # endpoint (api/passwords.py). However, if the
+                            # LFv2 poller is still in-flight at acknowledge-
+                            # time the next retry can still hit a not-yet-
+                            # populated entry — hence the "wait a moment"
+                            # qualifier below.
+                            logger.warning(
+                                "Access denied to %s: app password missing "
+                                "after user accepted elicitation; advising retry",
+                                func_name,
+                            )
+                            error_msg = (
+                                f"Access denied to {func_name}: Nextcloud "
+                                f"access was not provisioned at the time of "
+                                f"this call. If you just completed "
+                                f"provisioning, please retry the request — "
+                                f"if it still fails, provisioning may still be "
+                                f"completing; wait a moment and try again."
+                            )
+                        else:
+                            logger.warning(
+                                "Access denied to %s: app password missing; "
+                                "advising nc_auth_provision_access "
+                                "(elicit_result=%s)",
+                                func_name,
+                                elicit_result,
+                            )
+                            error_msg = (
+                                f"Access denied to {func_name}: "
+                                f"Nextcloud access not provisioned. "
+                                f"Please call 'nc_auth_provision_access' first."
+                            )
                         raise ProvisioningRequiredError(error_msg)
 
                     if stored_scopes == "all":

@@ -15,7 +15,6 @@ Flow:
 
 import html
 import logging
-import os
 import secrets
 import time
 from urllib.parse import urlparse
@@ -26,6 +25,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.api.management import validate_token_and_get_user
 from nextcloud_mcp_server.auth.login_flow import LoginFlowV2Client, rewrite_url_origin
+from nextcloud_mcp_server.auth.scope_authorization import invalidate_scope_cache
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_nextcloud_ssl_verify, get_settings
 
@@ -115,6 +115,7 @@ async def _poll_and_store(provision_id: str) -> None:
                 scopes=None,  # All scopes
                 username=result.login_name,
             )
+            invalidate_scope_cache(effective_user_id)
             session = _provision_sessions.get(provision_id)
             if session:
                 session["status"] = "completed"
@@ -251,7 +252,7 @@ async def provision_page(
     # LoginFlowV2Client) while login_url is rewritten to the public issuer
     # URL here because the browser needs a publicly-reachable address.
     login_url = init_response.login_url
-    public_issuer = os.getenv("NEXTCLOUD_PUBLIC_ISSUER_URL", "")
+    public_issuer = settings.nextcloud_public_issuer_url or ""
     if public_issuer and nextcloud_host:
         login_url = rewrite_url_origin(login_url, public_issuer.rstrip("/"))
 
