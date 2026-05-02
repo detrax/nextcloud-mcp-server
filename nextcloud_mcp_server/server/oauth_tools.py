@@ -9,7 +9,6 @@ import logging
 import os
 import secrets
 from datetime import datetime, timezone
-from typing import Optional
 from urllib.parse import urlencode
 
 from mcp.server.fastmcp import Context
@@ -18,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.auth.astrolabe_client import AstrolabeClient
-from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
 
 # Re-export for backward compatibility — canonical location is auth.token_utils
@@ -34,17 +33,17 @@ class ProvisioningStatus(BaseModel):
     """Status of Nextcloud provisioning for a user."""
 
     is_provisioned: bool = Field(description="Whether Nextcloud access is provisioned")
-    provisioned_at: Optional[str] = Field(
+    provisioned_at: str | None = Field(
         None, description="ISO timestamp when provisioned"
     )
-    credential_type: Optional[str] = Field(
+    credential_type: str | None = Field(
         None, description="Type of credential ('refresh_token' or 'app_password')"
     )
-    client_id: Optional[str] = Field(
+    client_id: str | None = Field(
         None, description="Client ID that initiated the original Flow 1"
     )
-    scopes: Optional[list[str]] = Field(None, description="Granted scopes")
-    flow_type: Optional[str] = Field(
+    scopes: list[str] | None = Field(None, description="Granted scopes")
+    flow_type: str | None = Field(
         None, description="Type of flow used ('hybrid', 'flow1', 'flow2')"
     )
 
@@ -53,7 +52,7 @@ class ProvisioningResult(BaseModel):
     """Result of provisioning attempt."""
 
     success: bool = Field(description="Whether provisioning was initiated")
-    provisioning_url: Optional[str] = Field(
+    provisioning_url: str | None = Field(
         None, description="URL to Astrolabe settings for provisioning background sync"
     )
     message: str = Field(description="Status message for the user")
@@ -122,8 +121,7 @@ async def get_provisioning_status(ctx: Context, user_id: str) -> ProvisioningSta
     logger.info(
         f"  get_provisioning_status: Looking up refresh token for user_id={user_id}"
     )
-    storage = RefreshTokenStorage.from_env()
-    await storage.initialize()
+    storage = await get_shared_storage()
 
     token_data = await storage.get_refresh_token(user_id)
 
@@ -291,8 +289,7 @@ async def revoke_nextcloud_access(ctx: Context, user_id: str) -> RevocationResul
             )
 
         # Initialize Token Broker to handle revocation
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
+        storage = await get_shared_storage()
 
         # Get OAuth client credentials from storage
         client_creds = await storage.get_oauth_client()
@@ -420,8 +417,7 @@ async def check_logged_in(ctx: Context, user_id: str) -> str:
         state = secrets.token_urlsafe(32)
 
         # Store state in session for validation on callback
-        storage = RefreshTokenStorage.from_env()
-        await storage.initialize()
+        storage = await get_shared_storage()
 
         # Create OAuth session for Flow 2
         session_id = f"flow2_{user_id}_{secrets.token_hex(8)}"

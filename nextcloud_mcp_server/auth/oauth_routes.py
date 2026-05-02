@@ -954,6 +954,28 @@ async def _oauth_callback_as_proxy(
         f"(token_type={nc_token_response.get('token_type')})"
     )
 
+    # Verify the ID token signature + claims before caching the response
+    # (PR #758 finding 1). Without this, a compromised IdP or tampered
+    # transport could plant arbitrary identity claims into the proxy code
+    # entry that gets handed back to the MCP client. Mirrors the
+    # verification done in oauth_callback_nextcloud.
+    id_token = nc_token_response.get("id_token")
+    try:
+        await verify_id_token(
+            id_token,
+            discovery_url=discovery_url,
+            expected_audience=mcp_server_client_id,
+        )
+    except IdTokenVerificationError as e:
+        logger.error("AS proxy: ID token verification failed: %s", e)
+        return JSONResponse(
+            {
+                "error": "invalid_token",
+                "error_description": "ID token failed verification",
+            },
+            status_code=400,
+        )
+
     # Generate a proxy authorization code for the client
     proxy_code = secrets.token_urlsafe(32)
     _proxy_codes[proxy_code] = ProxyCodeEntry(

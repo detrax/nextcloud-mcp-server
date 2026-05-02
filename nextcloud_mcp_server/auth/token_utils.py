@@ -52,6 +52,17 @@ async def _get_cached(
     return data
 
 
+async def get_oidc_discovery(discovery_url: str) -> dict[str, Any]:
+    """Return the cached OIDC discovery document for *discovery_url*.
+
+    Shares the 5-minute discovery cache used by `verify_id_token`, so a
+    callback that does discovery → token-exchange → ID-token verification
+    reuses one HTTP round-trip instead of three. Public alias for `_get_cached`
+    against `_discovery_cache` (PR #758 nits 5 & 6).
+    """
+    return await _get_cached(_discovery_cache, discovery_url)
+
+
 async def verify_id_token(
     id_token: str,
     *,

@@ -19,6 +19,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.token_utils import (
     IdTokenVerificationError,
+    get_oidc_discovery,
     verify_id_token,
 )
 from nextcloud_mcp_server.auth.userinfo_routes import (
@@ -65,7 +66,15 @@ def _origin_matches_self(request: Request, oauth_ctx: dict) -> bool:
     cfg = oauth_ctx.get("config") or oauth_ctx
     mcp_server_url = cfg.get("mcp_server_url")
     if not mcp_server_url:
-        # Mis-configured deployment — fail open rather than break logout.
+        # Mis-configured deployment — fail open rather than break logout, but
+        # log loudly so the operator can see this is happening (PR #758
+        # finding 3). Other OAuth code paths require ``mcp_server_url`` and
+        # KeyError if it's absent, so this branch should never fire in a
+        # correctly configured deployment.
+        logger.warning(
+            "CSRF check bypassed on /oauth/logout: mcp_server_url not "
+            "configured in oauth_context — set NEXTCLOUD_MCP_SERVER_URL"
+        )
         return True
 
     expected = _normalise_origin(mcp_server_url)
@@ -149,6 +158,12 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
+    # Generate OIDC nonce so the ID token returned on callback can be bound
+    # to THIS auth request (PR #758 finding 2). Without a nonce, an attacker
+    # who acquired a separate valid ID token could replay it inside this
+    # flow.
+    nonce = secrets.token_urlsafe(32)
+
     # Build OAuth authorization URL
     mcp_server_url = oauth_config["mcp_server_url"]
     callback_uri = f"{mcp_server_url}/oauth/callback"
@@ -164,7 +179,8 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
     digest = hashlib.sha256(code_verifier.encode()).digest()
     code_challenge = urlsafe_b64encode(digest).decode().rstrip("=")
 
-    # Store code_verifier in session for retrieval during callback (using state as key)
+    # Store code_verifier + nonce in session for retrieval during callback
+    # (using state as key)
     await storage.store_oauth_session(
         session_id=state,  # Use state as session ID
         client_id="browser-ui",
@@ -173,6 +189,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         code_challenge=code_challenge,
         code_challenge_method="S256",
         mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        nonce=nonce,
         flow_type="browser",
         ttl_seconds=600,  # 10 minutes
     )
@@ -199,6 +216,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "response_type": "code",
             "scope": scopes,
             "state": state,
+            "nonce": nonce,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "prompt": "consent",  # Ensure refresh token
@@ -219,12 +237,11 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
                 status_code=500,
             )
 
-        # Fetch authorization endpoint
-        async with nextcloud_httpx_client() as http_client:
-            response = await http_client.get(discovery_url)
-            response.raise_for_status()
-            discovery = response.json()
-            authorization_endpoint = discovery["authorization_endpoint"]
+        # Fetch authorization endpoint via the shared 5-minute discovery
+        # cache (PR #758 nit 5) so each browser login doesn't hit the IdP's
+        # discovery endpoint.
+        discovery = await get_oidc_discovery(discovery_url)
+        authorization_endpoint = discovery["authorization_endpoint"]
 
         # Include offline_access only if the IdP advertises it (or if
         # scopes_supported is absent from the discovery document).
@@ -257,6 +274,7 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
             "response_type": "code",
             "scope": scopes,
             "state": state,
+            "nonce": nonce,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "prompt": "consent",  # Ensure refresh token
@@ -336,13 +354,17 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier and redirect URL from session storage
+    # Retrieve code_verifier, nonce, and redirect URL from session storage
     code_verifier = ""
+    nonce: str | None = None
     next_url = "/app"  # Default redirect
     oauth_session = await storage.get_oauth_session(state)
     if oauth_session:
         # code_verifier was stored in mcp_authorization_code field
         code_verifier = oauth_session.get("mcp_authorization_code", "")
+        # nonce bound to this auth request — verified against the ID token
+        # below (PR #758 finding 2).
+        nonce = oauth_session.get("nonce")
         # next_url was stored in client_redirect_uri field — re-validate at
         # read-time as defense-in-depth (issue #758 finding 3). The session
         # row could have been written by an older code path or reused.
@@ -483,6 +505,7 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
             id_token,
             discovery_url=verification_discovery_url,
             expected_audience=verification_audience,
+            expected_nonce=nonce,
         )
     except IdTokenVerificationError as e:
         logger.error("ID token verification failed: %s", e)
@@ -673,21 +696,21 @@ async def _revoke_refresh_token_at_idp(oauth_ctx: dict, refresh_token: str) -> N
         if not discovery_url:
             return
 
+        # Re-use the shared 5-minute discovery cache (PR #758 nit 6) so a
+        # burst of logouts doesn't hammer the IdP's discovery endpoint.
+        discovery = await get_oidc_discovery(discovery_url)
+        revocation_endpoint = discovery.get("revocation_endpoint")
+        if not revocation_endpoint:
+            logger.debug("IdP advertises no revocation_endpoint; skipping")
+            return
+
+        client_id = cfg.get("client_id") or settings.oidc_client_id
+        client_secret = cfg.get("client_secret") or settings.oidc_client_secret
+        if not (client_id and client_secret):
+            logger.debug("No OIDC client credentials available for revocation")
+            return
+
         async with nextcloud_httpx_client() as http_client:
-            discovery_response = await http_client.get(discovery_url)
-            discovery_response.raise_for_status()
-            discovery = discovery_response.json()
-            revocation_endpoint = discovery.get("revocation_endpoint")
-            if not revocation_endpoint:
-                logger.debug("IdP advertises no revocation_endpoint; skipping")
-                return
-
-            client_id = cfg.get("client_id") or settings.oidc_client_id
-            client_secret = cfg.get("client_secret") or settings.oidc_client_secret
-            if not (client_id and client_secret):
-                logger.debug("No OIDC client credentials available for revocation")
-                return
-
             response = await http_client.post(
                 revocation_endpoint,
                 data={

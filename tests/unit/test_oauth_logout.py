@@ -20,6 +20,7 @@ import pytest
 from cryptography.fernet import Fernet
 from starlette.requests import HTTPConnection
 
+from nextcloud_mcp_server.auth import token_utils
 from nextcloud_mcp_server.auth.browser_oauth_routes import (
     _revoke_refresh_token_at_idp,
     oauth_logout,
@@ -28,6 +29,20 @@ from nextcloud_mcp_server.auth.session_backend import SessionAuthBackend
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_oidc_discovery_cache():
+    """Reset the shared discovery cache so tests don't see each other's fetches.
+
+    ``_revoke_refresh_token_at_idp`` was changed (PR #758 nit 6) to use
+    ``token_utils.get_oidc_discovery`` which caches for 5 minutes — without
+    this clear, the second test in the file would see the first test's
+    discovery doc and skip the MockTransport call.
+    """
+    token_utils._discovery_cache.clear()
+    yield
+    token_utils._discovery_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -337,9 +352,17 @@ async def test_revoke_helper_posts_to_revocation_endpoint():
         kwargs["transport"] = transport
         return httpx.AsyncClient(**kwargs)
 
-    with patch(
-        "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
-        side_effect=fake_client,
+    # Discovery now goes through token_utils.get_oidc_discovery (PR #758 nit
+    # 6); revocation POST still uses browser_oauth_routes' httpx client.
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
     ):
         await _revoke_refresh_token_at_idp(
             {
@@ -373,9 +396,15 @@ async def test_revoke_helper_skips_when_no_revocation_endpoint():
         kwargs["transport"] = transport
         return httpx.AsyncClient(**kwargs)
 
-    with patch(
-        "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
-        side_effect=fake_client,
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
     ):
         # Returns None and does not raise
         result = await _revoke_refresh_token_at_idp(
@@ -403,9 +432,15 @@ async def test_revoke_helper_silent_on_idp_error():
         kwargs["transport"] = transport
         return httpx.AsyncClient(**kwargs)
 
-    with patch(
-        "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
-        side_effect=fake_client,
+    with (
+        patch(
+            "nextcloud_mcp_server.auth.browser_oauth_routes.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
+        patch(
+            "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
+            side_effect=fake_client,
+        ),
     ):
         result = await _revoke_refresh_token_at_idp(
             {

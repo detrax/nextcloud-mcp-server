@@ -917,6 +917,7 @@ class RefreshTokenStorage:
         flow_type: str = "hybrid",
         is_provisioning: bool = False,
         requested_scopes: str | None = None,
+        nonce: str | None = None,
         ttl_seconds: int = 600,  # 10 minutes
     ) -> None:
         """
@@ -933,6 +934,8 @@ class RefreshTokenStorage:
             flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
             is_provisioning: Whether this is a Flow 2 provisioning session
             requested_scopes: Requested OAuth scopes
+            nonce: OIDC ``nonce`` value bound to this auth request, returned
+                in the ID token and verified on callback (PR #758 finding 2).
             ttl_seconds: Session TTL in seconds
         """
         if not self._initialized:
@@ -947,8 +950,8 @@ class RefreshTokenStorage:
                 INSERT INTO oauth_sessions
                 (session_id, client_id, client_redirect_uri, state, code_challenge,
                  code_challenge_method, mcp_authorization_code, flow_type,
-                 is_provisioning, requested_scopes, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_provisioning, requested_scopes, nonce, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -961,6 +964,7 @@ class RefreshTokenStorage:
                     flow_type,
                     is_provisioning,
                     requested_scopes,
+                    nonce,
                     now,
                     expires_at,
                 ),
