@@ -116,7 +116,7 @@ async def test_list_webhooks_uses_basic_auth(mocker):
     _assert_basic_auth_not_bearer(factory)
 
 
-async def test_list_webhooks_returns_412_when_unprovisioned(mocker):
+async def test_list_webhooks_returns_428_when_unprovisioned(mocker):
     _patch_token_validation(mocker)
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
@@ -126,7 +126,7 @@ async def test_list_webhooks_returns_412_when_unprovisioned(mocker):
     client = TestClient(_build_test_app())
     resp = client.get("/api/v1/webhooks", headers={"Authorization": "Bearer mcp-token"})
 
-    assert resp.status_code == 412
+    assert resp.status_code == 428
     assert resp.json()["error"] == "Provisioning required"
 
 
@@ -177,7 +177,7 @@ async def test_create_webhook_validates_required_fields(mocker):
     assert resp.status_code == 400
 
 
-async def test_create_webhook_returns_412_when_unprovisioned(mocker):
+async def test_create_webhook_returns_428_when_unprovisioned(mocker):
     _patch_token_validation(mocker)
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
@@ -191,7 +191,7 @@ async def test_create_webhook_returns_412_when_unprovisioned(mocker):
         json={"event": "X", "uri": "http://x"},
     )
 
-    assert resp.status_code == 412
+    assert resp.status_code == 428
     assert resp.json()["error"] == "Provisioning required"
 
 
@@ -229,7 +229,7 @@ async def test_delete_webhook_rejects_non_integer_id(mocker):
     assert resp.status_code == 400
 
 
-async def test_delete_webhook_returns_412_when_unprovisioned(mocker):
+async def test_delete_webhook_returns_428_when_unprovisioned(mocker):
     _patch_token_validation(mocker)
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
@@ -242,7 +242,7 @@ async def test_delete_webhook_returns_412_when_unprovisioned(mocker):
         headers={"Authorization": "Bearer mcp-token"},
     )
 
-    assert resp.status_code == 412
+    assert resp.status_code == 428
     assert resp.json()["error"] == "Provisioning required"
 
 

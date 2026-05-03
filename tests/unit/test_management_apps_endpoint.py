@@ -166,9 +166,11 @@ async def test_missing_nextcloud_host_returns_500(mocker):
     assert http_response.status_code == 500
 
 
-async def test_unprovisioned_user_returns_412(mocker):
-    """Users without a stored app password get HTTP 412 so the client can
-    surface a 'complete Login Flow v2' UX rather than a generic 500."""
+async def test_unprovisioned_user_returns_428(mocker):
+    """Users without a stored app password get HTTP 428 (Precondition Required,
+    RFC 6585) so the client can surface a 'complete Login Flow v2' UX rather
+    than a generic 500. 428 is the right semantic — the request requires a
+    prerequisite step (provisioning) before it can succeed."""
     _patch_token_validation(mocker)
     mocker.patch(
         "nextcloud_mcp_server.api.webhooks.get_basic_auth_for_user",
@@ -181,5 +183,5 @@ async def test_unprovisioned_user_returns_412(mocker):
         "/api/v1/apps", headers={"Authorization": "Bearer test-token"}
     )
 
-    assert http_response.status_code == 412
+    assert http_response.status_code == 428
     assert http_response.json()["error"] == "Provisioning required"

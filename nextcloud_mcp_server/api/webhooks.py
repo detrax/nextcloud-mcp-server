@@ -91,7 +91,7 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         logger.info("Provisioning required for user %s: %s", user_id, e)
         return JSONResponse(
             {"error": "Provisioning required", "message": str(e)},
-            status_code=412,
+            status_code=428,
         )
     except Exception as e:
         logger.error("Error getting installed apps for user %s: %s", user_id, e)
@@ -145,7 +145,7 @@ async def list_webhooks(request: Request) -> JSONResponse:
         logger.info("Provisioning required for user %s: %s", user_id, e)
         return JSONResponse(
             {"error": "Provisioning required", "message": str(e)},
-            status_code=412,
+            status_code=428,
         )
     except Exception as e:
         logger.error("Error listing webhooks for user %s: %s", user_id, e)
@@ -232,7 +232,7 @@ async def create_webhook(request: Request) -> JSONResponse:
         logger.info("Provisioning required for user %s: %s", user_id, e)
         return JSONResponse(
             {"error": "Provisioning required", "message": str(e)},
-            status_code=412,
+            status_code=428,
         )
     except Exception as e:
         logger.error("Error creating webhook for user %s: %s", user_id, e)
@@ -302,7 +302,7 @@ async def delete_webhook(request: Request) -> JSONResponse:
         logger.info("Provisioning required for user %s: %s", user_id, e)
         return JSONResponse(
             {"error": "Provisioning required", "message": str(e)},
-            status_code=412,
+            status_code=428,
         )
     except Exception as e:
         logger.error("Error deleting webhook for user %s: %s", user_id, e)
