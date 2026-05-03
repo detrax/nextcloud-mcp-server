@@ -479,7 +479,10 @@ async def oauth_authorize_nextcloud(
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
-        mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        # `mcp_authorization_code` field reused to store the PKCE
+        # code_verifier (one-time-use). Renaming the column requires a
+        # schema migration.
+        mcp_authorization_code=code_verifier,
         nonce=nonce,
         flow_type="flow2",
         ttl_seconds=600,  # 10 minutes
@@ -580,22 +583,31 @@ async def oauth_callback_nextcloud(request: Request):
     oauth_config = oauth_ctx["config"]
 
     # Retrieve code_verifier + nonce from session storage (PKCE + OIDC
-    # nonce binding both required for Flow 2 — round-3 finding 1).
-    code_verifier = ""
-    nonce: str | None = None
+    # nonce binding both required for Flow 2 — round-3 finding 1). Fail
+    # closed when the row is missing/expired so PKCE + nonce verification
+    # are not silently bypassed (round-6 review).
     oauth_session = await storage.get_oauth_session(state)
-    if oauth_session:
-        # code_verifier was stored in mcp_authorization_code field
-        code_verifier = oauth_session.get("mcp_authorization_code", "")
-        nonce = oauth_session.get("nonce")
-        logger.info(
-            f"Retrieved code_verifier for Flow 2 callback (state={state[:16]}...)"
+    if not oauth_session:
+        logger.warning("Flow 2 callback received unknown/expired state=%s", state[:16])
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": (
+                    "Unknown or expired session — please retry the OAuth flow"
+                ),
+            },
+            status_code=400,
         )
-        # One-time-use session: delete eagerly so the stored code_verifier
-        # can't be replayed for the remainder of the oauth_sessions TTL.
-        # Mirrors browser_oauth_routes.oauth_login_callback (PR #758
-        # follow-up review).
-        await storage.delete_oauth_session(state)
+    # `mcp_authorization_code` field reused to store the PKCE code_verifier
+    # (one-time-use). Renaming the column requires a schema migration.
+    code_verifier = oauth_session.get("mcp_authorization_code", "")
+    nonce = oauth_session.get("nonce")
+    logger.info("Retrieved code_verifier for Flow 2 callback (state=%s…)", state[:16])
+    # One-time-use session: delete eagerly so the stored code_verifier
+    # can't be replayed for the remainder of the oauth_sessions TTL.
+    # Mirrors browser_oauth_routes.oauth_login_callback (PR #758
+    # follow-up review).
+    await storage.delete_oauth_session(state)
 
     # Exchange code for tokens
     mcp_server_client_id = os.getenv(

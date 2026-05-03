@@ -5,6 +5,7 @@ between server/ and auth/ layers.
 """
 
 import logging
+import secrets
 import time
 from typing import Any
 
@@ -232,7 +233,13 @@ async def verify_id_token(
             f"Unexpected error verifying ID token: {e}"
         ) from e
 
-    if expected_nonce is not None and payload.get("nonce") != expected_nonce:
+    # Constant-time comparison mirrors the PKCE verifier check
+    # (oauth_routes.py:1029) — short-circuit `!=` is avoided in
+    # security-sensitive equality even when the secret is server-generated
+    # (round-6 review).
+    if expected_nonce is not None and not secrets.compare_digest(
+        payload.get("nonce", "") or "", expected_nonce
+    ):
         raise IdTokenVerificationError("ID token nonce does not match request nonce")
 
     return payload

@@ -20,10 +20,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
 from nextcloud_mcp_server.auth.oauth_routes import (
     ASProxySession,
     _as_proxy_sessions,
@@ -136,51 +136,51 @@ async def test_callback_deletes_oauth_session_after_reading_verifier(storage):
     )
 
 
-async def test_callback_no_session_row_does_not_crash(storage):
-    """If the row is already gone (e.g. expired), the callback proceeds."""
+async def test_callback_unknown_state_returns_400(storage):
+    """Unknown/expired state must fail closed with 400.
+
+    Pins the PR #758 round-6 review fix: previously the callback fell
+    through with empty ``code_verifier`` / ``expected_nonce=None``,
+    silently bypassing the PKCE + nonce protections introduced in earlier
+    rounds. The handler now returns 400 before any token exchange.
+    """
     state = "state-missing"
     # No store_oauth_session call — the row never existed.
 
     request = _build_request(code="idp-auth-code", state=state, storage=storage)
 
-    fake_discovery = {
-        "token_endpoint": "https://idp.example.com/token",
-        "userinfo_endpoint": "https://idp.example.com/userinfo",
-        "issuer": "https://idp.example.com",
+    response = await oauth_callback_nextcloud(request)
+
+    assert response.status_code == 400
+    assert await storage.get_oauth_session(state) is None
+
+
+async def test_browser_callback_unknown_state_returns_400(storage):
+    """Symmetric unknown-state contract for the browser-flow callback.
+
+    Mirrors ``test_callback_unknown_state_returns_400`` for
+    ``oauth_login_callback`` — both callbacks must fail closed when the
+    oauth_session row is missing/expired (PR #758 round-6 review).
+    """
+    state = "state-missing-browser"
+
+    request = MagicMock()
+    request.query_params = {"code": "idp-auth-code", "state": state}
+    request.cookies = {}
+    request.url_for = MagicMock(return_value="/oauth/login")
+    request.app.state.oauth_context = {
+        "storage": storage,
+        "oauth_client": None,  # Nextcloud-integrated mode
+        "config": {
+            "mcp_server_url": "https://mcp.example.com",
+            "client_id": "mcp-server",
+            "client_secret": "mcp-secret",
+        },
     }
-    fake_token_response = MagicMock()
-    fake_token_response.json.return_value = {"access_token": "ac"}
-    fake_token_response.raise_for_status = MagicMock(
-        side_effect=httpx.HTTPStatusError(
-            "boom",
-            request=MagicMock(),
-            response=MagicMock(status_code=400),
-        )
-    )
 
-    fake_http = MagicMock()
-    fake_http.post = AsyncMock(return_value=fake_token_response)
-    fake_http.__aenter__ = AsyncMock(return_value=fake_http)
-    fake_http.__aexit__ = AsyncMock(return_value=None)
+    response = await oauth_login_callback(request)
 
-    with (
-        patch(
-            "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
-            new=AsyncMock(return_value=fake_discovery),
-        ),
-        patch(
-            "nextcloud_mcp_server.auth.oauth_routes.nextcloud_httpx_client",
-            return_value=fake_http,
-        ),
-    ):
-        # We don't care what happens past the deletion — just that the
-        # missing-row branch doesn't try to delete a nonexistent session.
-        try:
-            await oauth_callback_nextcloud(request)
-        except Exception:
-            pass
-
-    # No crash, no row, no surprises.
+    assert response.status_code == 400
     assert await storage.get_oauth_session(state) is None
 
 

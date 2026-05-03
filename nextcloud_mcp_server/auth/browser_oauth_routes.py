@@ -115,10 +115,15 @@ def _should_use_secure_cookies() -> bool:
     versa — would otherwise get the wrong answer.)
     """
     settings = get_settings()
-    if settings.cookie_secure is not None:
-        # Dynaconf auto-coerces "true"/"false" → bool but "1"/"0" → int;
-        # bool() normalises both.
-        return bool(settings.cookie_secure)
+    raw = settings.cookie_secure
+    if raw is not None:
+        # Dynaconf normally coerces "true"/"false"/"1"/"0", but tests or
+        # direct ``settings.set`` calls can bypass that — bool("false") is
+        # True. Normalise explicitly so an unexpected string never flips
+        # cookies to Secure on plain HTTP (round-6 review).
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
     mcp_server_url = settings.nextcloud_mcp_server_url or ""
     return mcp_server_url.startswith("https://")
 
@@ -189,7 +194,10 @@ async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
-        mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        # `mcp_authorization_code` field reused to store the PKCE
+        # code_verifier (one-time-use). Renaming the column requires a
+        # schema migration.
+        mcp_authorization_code=code_verifier,
         nonce=nonce,
         flow_type="browser",
         ttl_seconds=600,  # 10 minutes
@@ -355,25 +363,30 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     oauth_client = oauth_ctx["oauth_client"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier, nonce, and redirect URL from session storage
-    code_verifier = ""
-    nonce: str | None = None
-    next_url = "/app"  # Default redirect
+    # Retrieve code_verifier, nonce, and redirect URL from session storage.
+    # Fail closed when the row is missing/expired: otherwise PKCE +
+    # nonce verification silently degrade to no-ops (round-6 review).
     oauth_session = await storage.get_oauth_session(state)
-    if oauth_session:
-        # code_verifier was stored in mcp_authorization_code field
-        code_verifier = oauth_session.get("mcp_authorization_code", "")
-        # nonce bound to this auth request — verified against the ID token
-        # below (PR #758 finding 2).
-        nonce = oauth_session.get("nonce")
-        # next_url was stored in client_redirect_uri field — re-validate at
-        # read-time as defense-in-depth (issue #758 finding 3). The session
-        # row could have been written by an older code path or reused.
-        next_url = _safe_next_url(oauth_session.get("client_redirect_uri"), "/app")
-        # One-time-use session: delete eagerly so a replayed callback can't
-        # be processed and so the oauth_sessions table doesn't accumulate
-        # completed-but-not-yet-expired browser-login rows.
-        await storage.delete_oauth_session(state)
+    if not oauth_session:
+        logger.warning("OAuth callback received unknown/expired state=%s", state[:16])
+        return HTMLResponse(
+            "Unknown or expired session — please try logging in again.",
+            status_code=400,
+        )
+    # `mcp_authorization_code` field reused to store the PKCE code_verifier
+    # (one-time-use). Renaming the column requires a schema migration.
+    code_verifier = oauth_session.get("mcp_authorization_code", "")
+    # nonce bound to this auth request — verified against the ID token
+    # below (PR #758 finding 2).
+    nonce = oauth_session.get("nonce")
+    # next_url was stored in client_redirect_uri field — re-validate at
+    # read-time as defense-in-depth (issue #758 finding 3). The session
+    # row could have been written by an older code path or reused.
+    next_url = _safe_next_url(oauth_session.get("client_redirect_uri"), "/app")
+    # One-time-use session: delete eagerly so a replayed callback can't
+    # be processed and so the oauth_sessions table doesn't accumulate
+    # completed-but-not-yet-expired browser-login rows.
+    await storage.delete_oauth_session(state)
 
     # Exchange authorization code for tokens
     mcp_server_url = oauth_config["mcp_server_url"]
