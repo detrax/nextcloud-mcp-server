@@ -15,7 +15,7 @@ import pytest
 
 LOGIN_FLOW_API_BASE_URL = "http://localhost:8004"
 
-pytestmark = [pytest.mark.integration, pytest.mark.oauth]
+pytestmark = [pytest.mark.integration, pytest.mark.login_flow]
 
 
 async def test_get_installed_apps_returns_capability_keys(
