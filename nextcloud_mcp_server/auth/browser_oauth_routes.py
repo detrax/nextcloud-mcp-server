@@ -554,7 +554,9 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     refresh_expires_in = token_data.get("refresh_expires_in")
     refresh_expires_at = None
     if refresh_expires_in:
-        refresh_expires_at = int(time.time()) + refresh_expires_in
+        # Some IdPs (e.g. AWS Cognito) return refresh_expires_in as a JSON
+        # string rather than an int; coerce to be safe.
+        refresh_expires_at = int(time.time()) + int(refresh_expires_in)
         logger.debug(
             "Refresh token expires in %ss (at timestamp %s)",
             refresh_expires_in,
@@ -714,7 +716,15 @@ async def oauth_logout(request: Request) -> RedirectResponse | JSONResponse:
                 )
 
     response = RedirectResponse(next_url, status_code=302)
-    response.delete_cookie("mcp_session")
+    # Match the attributes from set_cookie so browsers reliably evict the
+    # cookie even on edge-case implementations that consider security flags
+    # when matching for deletion.
+    response.delete_cookie(
+        "mcp_session",
+        httponly=True,
+        secure=_should_use_secure_cookies(),
+        samesite="lax",
+    )
 
     logger.info("User logged out, session cookie cleared")
     return response

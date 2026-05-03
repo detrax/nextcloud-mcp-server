@@ -432,20 +432,11 @@ async def _check_logged_in(ctx: Context, user_id: str) -> str:
         # Store state in session for validation on callback
         storage = await get_shared_storage()
 
-        # Create OAuth session for Flow 2. Identifier is purely random
-        # so audit-log entries / DB rows don't carry the user_id in the
-        # session_id field (PR #758 round-4 review medium 3).
-        session_id = f"flow2_{secrets.token_hex(16)}"
+        # The canonical Flow 2 oauth_session row is written inside
+        # generate_oauth_url_for_flow2 (keyed by `state`, with the PKCE
+        # verifier and nonce); the unified callback looks it up by `state`.
+        # No additional row is needed here.
         redirect_uri = f"{os.getenv('NEXTCLOUD_MCP_SERVER_URL', 'http://localhost:8000')}/oauth/callback"
-
-        await storage.store_oauth_session(
-            session_id=session_id,
-            client_redirect_uri="",  # No client redirect for Flow 2
-            state=state,
-            flow_type="flow2",
-            is_provisioning=True,
-            ttl_seconds=600,  # 10 minute TTL
-        )
 
         # Define scopes for Nextcloud access
         # Note: offline_access is only included when enabled in settings.

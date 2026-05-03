@@ -699,7 +699,9 @@ async def oauth_callback_nextcloud(request: Request):
         refresh_expires_in = token_data.get("refresh_expires_in")
         refresh_expires_at = None
         if refresh_expires_in:
-            refresh_expires_at = int(time.time()) + refresh_expires_in
+            # Some IdPs (e.g. AWS Cognito) return refresh_expires_in as a JSON
+            # string rather than an int; coerce to be safe.
+            refresh_expires_at = int(time.time()) + int(refresh_expires_in)
             logger.info("  refresh_expires_in: %ss", refresh_expires_in)
             logger.info("  refresh_expires_at: %s", refresh_expires_at)
 
