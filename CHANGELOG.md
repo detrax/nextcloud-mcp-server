@@ -5,6 +5,13 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.79.3 (2026-05-03)
+
+### Fix
+
+- **webhooks**: use HTTP 428 instead of 412 for unprovisioned users
+- **webhooks**: use app-password basic auth for NC API calls
+
 ## v0.79.2 (2026-05-03)
 
 ### Fix
