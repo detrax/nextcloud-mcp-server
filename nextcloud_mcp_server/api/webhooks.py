@@ -47,7 +47,9 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         )
 
     try:
-        # Get Bearer token from request
+        # Get Bearer token from request — forwarded to Nextcloud so the
+        # capabilities response includes per-user / per-app entries (anonymous
+        # capabilities omits notes, tables, forms etc.).
         token = extract_bearer_token(request)
         if not token:
             raise ValueError("Missing Authorization header")
@@ -59,21 +61,20 @@ async def get_installed_apps(request: Request) -> JSONResponse:
         if not nextcloud_host:
             raise ValueError("Nextcloud host not configured")
 
-        # Create authenticated HTTP client
+        # Use OCS v2 capabilities. The legacy /ocs/v1.php/cloud/apps endpoint is
+        # admin-only AND @PasswordConfirmationRequired — neither is satisfiable
+        # via an OAuth bearer token, so it always 401s. Capabilities has no such
+        # gates and returns a map keyed by app id for every enabled app that
+        # implements OCSCapabilities, which is sufficient to populate the
+        # webhook presets UI.
         async with nextcloud_httpx_client(
             base_url=nextcloud_host,
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,
         ) as client:
-            # Get installed apps using OCS API
-            # Notes, Calendar, Deck, Tables, etc. are apps that support webhooks
-            # We check which ones are installed and enabled
-            ocs_url = "/ocs/v1.php/cloud/apps"
-            params = {"filter": "enabled"}
-
             response = await client.get(
-                ocs_url,
-                params=params,
+                "/ocs/v2.php/cloud/capabilities",
+                params={"format": "json"},
                 headers={"OCS-APIRequest": "true", "Accept": "application/json"},
             )
 
@@ -81,7 +82,8 @@ async def get_installed_apps(request: Request) -> JSONResponse:
                 raise ValueError(f"OCS API returned status {response.status_code}")
 
             data = response.json()
-            apps = data.get("ocs", {}).get("data", {}).get("apps", [])
+            capabilities = data.get("ocs", {}).get("data", {}).get("capabilities", {})
+            apps = sorted(capabilities.keys())
 
             return JSONResponse({"apps": apps})
 

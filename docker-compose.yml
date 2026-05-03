@@ -288,6 +288,12 @@ services:
       - ENABLE_SEMANTIC_SEARCH=true
       - VECTOR_SYNC_SCAN_INTERVAL=60
       - VECTOR_SYNC_PROCESSOR_WORKERS=1
+
+      # Management API allowlist (ADR-018) — matches mcp-multi-user-basic so
+      # the same configure_astrolabe_for_mcp_server fixture (which creates the
+      # static `nextcloudMcpServerUIPublicClient` OIDC client) works for tests
+      # against this profile too.
+      - ALLOWED_MGMT_CLIENT=nextcloudMcpServerUIPublicClient
     volumes:
       - login-flow-data:/app/data
       - login-flow-oauth-storage:/app/.oauth
