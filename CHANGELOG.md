@@ -5,6 +5,25 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.79.1 (2026-05-03)
+
+### Fix
+
+- **auth**: address PR #758 round-7 medium/minor review
+- **auth**: address PR #758 round-7 important review
+- **auth**: address PR #758 round-6 medium/low review
+- **auth**: address PR #758 round-5 medium/low review
+- **auth**: address PR #758 round-4 review
+- **auth**: address PR #758 round-3 final review
+- **auth**: address PR #758 round-3 review
+- **auth**: address PR #758 round-2 review
+- **auth**: address PR #758 auto-review (id-token verify, nonce, CI key)
+- **auth**: fail closed on missing sub claim, delete Flow 2 callback session
+- **auth**: address PR #758 follow-up review
+- **auth**: use Settings for OIDC env vars in token revocation helper
+- **auth**: address PR #758 review — XSS, CSRF, open redirect, JWKS cache
+- **auth**: harden OAuth/session for hosted multi-tenant deployment (#626)
+
 ## v0.79.0 (2026-05-02)
 
 ### Feat
