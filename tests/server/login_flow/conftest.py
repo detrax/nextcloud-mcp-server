@@ -1101,15 +1101,25 @@ async def login_flow_static_client_token(
             await page.fill('input[name="password"]', password)
             await page.click('button[type="submit"]')
             await page.wait_for_load_state("networkidle", timeout=60000)
-        try:
-            await _handle_oauth_consent_screen(page, username)
-        except Exception:
-            pass
 
+        # After login the oidc app issues a JS-driven re-authorize chain
+        # (/apps/oidc/redirect → /apps/oidc/authorize → /apps/oidc/consent).
+        # networkidle can fire during the gap before consent renders, so
+        # poll for either the consent page or the callback hit before
+        # bailing.
         start = time.time()
+        consent_handled = False
         while state not in auth_states:
-            if time.time() - start > 30:
+            if time.time() - start > 60:
                 raise TimeoutError("Timeout waiting for OAuth callback")
+            if not consent_handled:
+                try:
+                    handled = await _handle_oauth_consent_screen(page, username)
+                    if handled:
+                        consent_handled = True
+                except Exception as e:
+                    logger.warning("Consent screen handling raised: %s", e)
+                    consent_handled = True  # don't retry indefinitely
             await anyio.sleep(0.5)
         auth_code = auth_states[state]
     finally:
