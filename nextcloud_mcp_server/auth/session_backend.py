@@ -101,6 +101,17 @@ class SessionAuthBackend(AuthenticationBackend):
                     session_id[:8],
                     user_id,
                 )
+                # Proactively evict the orphan so the table doesn't accumulate
+                # rows that the auth check will keep rejecting until TTL
+                # cleanup (PR #758 round-7 minor).
+                try:
+                    await storage.delete_browser_session(session_id)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete orphaned browser session %s…: %s",
+                        session_id[:8],
+                        e,
+                    )
                 return None
 
             return AuthCredentials(["authenticated"]), SimpleUser(user_id)

@@ -568,30 +568,47 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
         token_data.get("scope", "").split() if token_data.get("scope") else None
     )
 
-    # Store refresh token (for background jobs ONLY)
-    if refresh_token:
-        logger.debug(
-            "Storing refresh token for user_id=%s state=%s... scopes=%s expires_at=%s",
+    # Store refresh token (for background jobs ONLY). The browser session
+    # itself is gated on this — without a refresh token, ``SessionAuthBackend``
+    # would reject every subsequent request and silently bounce the user back
+    # to ``/oauth/login`` (PR #758 round-7 medium 1).
+    if not refresh_token:
+        correlation_id = secrets.token_urlsafe(8)
+        logger.error(
+            "No refresh token in token response — cannot establish browser "
+            "session (correlation_id=%s, user_id=%s)",
+            correlation_id,
             user_id,
-            state[:16],
-            granted_scopes,
-            refresh_expires_at,
         )
-        await storage.store_refresh_token(
-            user_id=user_id,
-            refresh_token=refresh_token,
-            expires_at=refresh_expires_at,
-            flow_type="browser",  # Browser-based login flow
-            provisioning_client_id=state,  # Store state for unified session lookup
-            scopes=granted_scopes,
+        return HTMLResponse(
+            f"<h1>Login Failed</h1>"
+            f"<p>The identity provider did not return a refresh token, so a "
+            f"persistent session could not be established. Make sure "
+            f"<code>offline_access</code> is granted in the IdP configuration.</p>"
+            f"<p>Correlation ID: <code>{html_escape(correlation_id)}</code></p>",
+            status_code=400,
         )
-        logger.info(
-            "Refresh token stored for user %s (lookup key: %s...)",
-            user_id,
-            state[:16],
-        )
-    else:
-        logger.warning("No refresh token in token response - cannot store session")
+
+    logger.debug(
+        "Storing refresh token for user_id=%s state=%s... scopes=%s expires_at=%s",
+        user_id,
+        state[:16],
+        granted_scopes,
+        refresh_expires_at,
+    )
+    await storage.store_refresh_token(
+        user_id=user_id,
+        refresh_token=refresh_token,
+        expires_at=refresh_expires_at,
+        flow_type="browser",  # Browser-based login flow
+        provisioning_client_id=state,  # Store state for unified session lookup
+        scopes=granted_scopes,
+    )
+    logger.info(
+        "Refresh token stored for user %s (lookup key: %s...)",
+        user_id,
+        state[:16],
+    )
 
     # Query and cache user profile (for browser UI display)
     access_token = token_data.get("access_token")

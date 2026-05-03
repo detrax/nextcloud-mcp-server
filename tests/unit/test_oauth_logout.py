@@ -586,13 +586,21 @@ async def test_session_backend_rejects_unknown_session(storage):
 
 
 async def test_session_backend_rejects_session_without_refresh_token(storage):
-    """Defense-in-depth: session row exists but user has no refresh token."""
+    """Defense-in-depth: session row exists but user has no refresh token.
+
+    PR #758 round-7 minor: rejection now also evicts the orphaned
+    ``browser_sessions`` row so the table doesn't accumulate dead entries
+    that the auth check will keep rejecting until TTL cleanup.
+    """
     await storage.create_browser_session(session_id="sid-B", user_id="bob")
     # Note: NO refresh token stored for bob
 
     backend = SessionAuthBackend(oauth_enabled=True)
     conn = _build_conn(cookie="sid-B", oauth_context={"storage": storage})
     assert await backend.authenticate(conn) is None
+
+    # Orphan must be evicted on rejection.
+    assert await storage.get_browser_session_user("sid-B") is None
 
 
 async def test_session_backend_rejects_when_no_cookie(storage):

@@ -702,16 +702,19 @@ async def oauth_callback_nextcloud(request: Request):
             # Some IdPs (e.g. AWS Cognito) return refresh_expires_in as a JSON
             # string rather than an int; coerce to be safe.
             refresh_expires_at = int(time.time()) + int(refresh_expires_in)
-            logger.info("  refresh_expires_in: %ss", refresh_expires_in)
-            logger.info("  refresh_expires_at: %s", refresh_expires_at)
+            logger.debug("  refresh_expires_in: %ss", refresh_expires_in)
+            logger.debug("  refresh_expires_at: %s", refresh_expires_at)
 
-        logger.info("Storing refresh token:")
-        logger.info("  user_id: %s", user_id)
-        logger.info("  flow_type: flow2")
-        logger.info("  token_audience: nextcloud")
-        logger.info("  provisioning_client_id: %s...", state[:16])
-        logger.info("  scopes: %s", granted_scopes)
-        logger.info("  expires_at: %s", refresh_expires_at)
+        # Identity-bearing fields stay at DEBUG so they don't reach
+        # multi-tenant log aggregation on every Flow 2 provision (PR #758
+        # round-7 minor).
+        logger.debug("Storing refresh token:")
+        logger.debug("  user_id: %s", user_id)
+        logger.debug("  flow_type: flow2")
+        logger.debug("  token_audience: nextcloud")
+        logger.debug("  provisioning_client_id: %s...", state[:16])
+        logger.debug("  scopes: %s", granted_scopes)
+        logger.debug("  expires_at: %s", refresh_expires_at)
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -722,8 +725,8 @@ async def oauth_callback_nextcloud(request: Request):
             scopes=granted_scopes,
             expires_at=refresh_expires_at,
         )
-        logger.info("✓ Stored Flow 2 master refresh token for user %s", user_id)
-        logger.info("=" * 60)
+        logger.debug("✓ Stored Flow 2 master refresh token for user %s", user_id)
+        logger.debug("=" * 60)
 
     # Return success HTML page
     success_html = """
