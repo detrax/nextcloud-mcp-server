@@ -42,7 +42,7 @@ async def test_registration_not_supported_when_no_endpoint():
     }
 
     with patch(
-        "nextcloud_mcp_server.auth.oauth_routes._get_cached_discovery",
+        "nextcloud_mcp_server.auth.oauth_routes.get_oidc_discovery",
         new_callable=AsyncMock,
         return_value=discovery_doc,
     ):

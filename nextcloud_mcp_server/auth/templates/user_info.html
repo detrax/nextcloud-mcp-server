@@ -285,14 +285,18 @@
             <ul class="app-navigation__settings">
                 <li class="app-navigation-entry">
                     <div class="app-navigation-entry__wrapper">
-                        <a href="{{ logout_url }}" class="app-navigation-entry-link">
-                            <span class="app-navigation-entry-icon">
-                                <svg class="nav-icon" viewBox="0 0 24 24">
-                                    <path d="M16,17V14H9V10H16V7L21,12L16,17M14,2A2,2 0 0,1 16,4V6H14V4H5V20H14V18H16V20A2,2 0 0,1 14,22H5A2,2 0 0,1 3,20V4A2,2 0 0,1 5,2H14Z" />
-                                </svg>
-                            </span>
-                            <span class="app-navigation-entry__name">Logout</span>
-                        </a>
+                        {# Logout is POST-only to defeat CSRF (PR #758 finding 5).
+                           Style this <button> like the surrounding link entries. #}
+                        <form method="post" action="{{ logout_url }}" class="app-navigation-entry-link" style="display:contents;">
+                            <button type="submit" class="app-navigation-entry-link" style="background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;display:flex;align-items:center;width:100%;">
+                                <span class="app-navigation-entry-icon">
+                                    <svg class="nav-icon" viewBox="0 0 24 24">
+                                        <path d="M16,17V14H9V10H16V7L21,12L16,17M14,2A2,2 0 0,1 16,4V6H14V4H5V20H14V18H16V20A2,2 0 0,1 14,22H5A2,2 0 0,1 3,20V4A2,2 0 0,1 5,2H14Z" />
+                                    </svg>
+                                </span>
+                                <span class="app-navigation-entry__name">Logout</span>
+                            </button>
+                        </form>
                     </div>
                 </li>
             </ul>

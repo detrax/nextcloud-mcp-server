@@ -153,10 +153,10 @@ services:
       - ENABLE_MULTI_USER_BASIC_AUTH=true
       - ENABLE_BACKGROUND_OPERATIONS=true
 
-      # Token storage (required for middleware initialization)
-      # DEVELOPMENT ONLY - generate a fresh key for production:
-      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - TOKEN_ENCRYPTION_KEY=fqqI4G51yBCOcu9cvv6wCUJB7sf_CK2za5ClC6b86yY=
+      # Token storage (required for middleware initialization).
+      # Source the key from .env — see env.sample. To generate a fresh key:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set in .env (see env.sample)}
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       - ENABLE_SEMANTIC_SEARCH=true
@@ -230,9 +230,9 @@ services:
       - NEXTCLOUD_RESOURCE_URI=nextcloud  # ADR-005: Keycloak uses client IDs as audiences, not URLs
       - NEXTCLOUD_PUBLIC_ISSUER_URL=http://localhost:8888/realms/nextcloud-mcp
 
-      # Refresh token storage (ADR-002 Tier 1 & 2)
+      # Refresh token storage (ADR-002 Tier 1 & 2). Source from .env.
       - ENABLE_BACKGROUND_OPERATIONS=true
-      - TOKEN_ENCRYPTION_KEY=ESF1BvEQdGYsCluwMx9Cxvw3uh5pFowPH7Rg_nIliyo=
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set in .env (see env.sample)}
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       # ADR-005: Token exchange mode (RFC 8693)
@@ -278,10 +278,10 @@ services:
       # Login Flow v2 (ADR-022)
       - ENABLE_LOGIN_FLOW=true
 
-      # Token storage (required for app password + session persistence)
-      # DEVELOPMENT ONLY - generate a fresh key for production:
-      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - TOKEN_ENCRYPTION_KEY=rxJvkBf7ZBjZZDL4a1sSqjhmjawhmbRMSOGfK8HDyKU=
+      # Token storage (required for app password + session persistence).
+      # Source the key from .env — see env.sample. To generate a fresh key:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set in .env (see env.sample)}
       - TOKEN_STORAGE_DB=/app/data/tokens.db
 
       # Semantic search

@@ -1,12 +1,12 @@
-"""Unit tests for OIDC discovery fetch in oauth_routes."""
+"""Unit tests for the shared OIDC discovery fetch in token_utils."""
 
 from unittest.mock import patch
 
 import httpx
 import pytest
 
-from nextcloud_mcp_server.auth import oauth_routes
-from nextcloud_mcp_server.auth.oauth_routes import _get_cached_discovery
+from nextcloud_mcp_server.auth import token_utils
+from nextcloud_mcp_server.auth.token_utils import get_oidc_discovery
 
 pytestmark = pytest.mark.unit
 
@@ -14,9 +14,9 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def _clear_discovery_cache():
     """Reset the in-memory discovery cache between tests."""
-    oauth_routes._discovery_cache.clear()
+    token_utils._discovery_cache.clear()
     yield
-    oauth_routes._discovery_cache.clear()
+    token_utils._discovery_cache.clear()
 
 
 async def test_discovery_follows_redirect_to_index_php():
@@ -26,7 +26,8 @@ async def test_discovery_follows_redirect_to_index_php():
     redirect ``/.well-known/openid-configuration`` to
     ``/index.php/.well-known/openid-configuration``. Without follow_redirects
     the OAuth authorize handler raises HTTPStatusError and returns 500
-    (see oauth_routes._get_cached_discovery).
+    (PR #758 round-2 nit 3 consolidated the discovery cache; see
+    ``token_utils.get_oidc_discovery``).
     """
 
     pretty_url = "https://nx.example.com/.well-known/openid-configuration"
@@ -51,10 +52,10 @@ async def test_discovery_follows_redirect_to_index_php():
         return httpx.AsyncClient(**kwargs)
 
     with patch(
-        "nextcloud_mcp_server.auth.oauth_routes.nextcloud_httpx_client",
+        "nextcloud_mcp_server.auth.token_utils.nextcloud_httpx_client",
         side_effect=fake_client,
     ) as factory:
-        result = await _get_cached_discovery(pretty_url)
+        result = await get_oidc_discovery(pretty_url)
 
     assert result == discovery_doc
     factory.assert_called_once()

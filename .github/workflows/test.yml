@@ -129,6 +129,18 @@ jobs:
       #     npm ci
       #     npm run build
 
+      # Generate an ephemeral Fernet key per CI run. docker-compose.yml
+      # requires TOKEN_ENCRYPTION_KEY (PR #758 finding 5 removed the
+      # hardcoded default), but the CI tokens.db is destroyed at the end of
+      # the job so there is no value in persisting the key as a repo secret.
+      # ``openssl rand -base64 32`` produces 32 bytes encoded as 44 base64
+      # chars; ``tr '+/' '-_'`` converts to URL-safe base64, which is
+      # exactly what Fernet expects.
+      - name: Generate ephemeral TOKEN_ENCRYPTION_KEY
+        run: |
+          KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
+
       # Start services with the appropriate profile
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@4894d2492015c1774ee5a13a95b1072093087ec3 # v2.5.0
@@ -139,6 +151,8 @@ jobs:
         env:
           MCP_SERVER_URL: ${{ matrix.mcp-internal-url }}
           NEXTCLOUD_IMAGE: ${{ matrix.nextcloud_image }}
+          # Inherited from $GITHUB_ENV via the previous step.
+          TOKEN_ENCRYPTION_KEY: ${{ env.TOKEN_ENCRYPTION_KEY }}
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0

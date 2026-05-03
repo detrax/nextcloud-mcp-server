@@ -22,6 +22,18 @@ class SessionAuthBackend(AuthenticationBackend):
 
     For BasicAuth mode: Always authenticates as the configured user.
     For OAuth mode: Checks for valid session cookie with stored refresh token.
+
+    Behavior note — silent invalidation on refresh-token TTL expiry:
+        The OAuth path requires *both* a live ``browser_sessions`` row and a
+        live ``refresh_tokens`` row for the resolved user. Logout deletes
+        both atomically, so a logged-out user always fails closed here.
+        However, if the refresh token expires by TTL (without an explicit
+        logout) the row is removed by ``get_refresh_token`` and the browser
+        session becomes unusable — the user simply gets redirected to
+        ``/oauth/login``. This is intentional defense-in-depth: the
+        refresh-token check is what makes a leaked or stale browser cookie
+        unusable after revocation. Do not relax this without first removing
+        the cleanup invariant on logout (PR #758 round-4 review medium 2).
     """
 
     def __init__(self, oauth_enabled: bool = False):
@@ -52,45 +64,58 @@ class SessionAuthBackend(AuthenticationBackend):
             username = os.getenv("NEXTCLOUD_USERNAME", "admin")
             return AuthCredentials(["authenticated", "admin"]), SimpleUser(username)
 
-        # OAuth mode: Check for session cookie
+        # OAuth mode: opaque random session_id cookie -> user_id mapping.
+        # Replaces the prior `mcp_session=<user_id>` cookie pattern (issue
+        # #626 finding 2). The cookie value is no longer the user identity;
+        # we look it up server-side and reject unknown / expired sessions.
         session_id = conn.cookies.get("mcp_session")
-        logger.info(
-            f"Session authentication check - cookie present: {session_id is not None}, path: {conn.url.path}"
-        )
         if not session_id:
             logger.info("No session cookie found - redirecting to login")
             return None
 
-        logger.info(f"Found session cookie: {session_id[:16]}...")
-
-        # Get OAuth context from app state
         oauth_context = getattr(conn.app.state, "oauth_context", None)
         if not oauth_context:
             logger.warning("OAuth context not available in app state")
             return None
 
-        # Validate session
         storage = oauth_context.get("storage")
         if not storage:
             logger.warning("OAuth storage not available")
             return None
 
         try:
-            # Check if user has refresh token (indicates logged-in session)
-            logger.info(f"Looking up refresh token for session: {session_id[:16]}...")
-            token_data = await storage.get_refresh_token(session_id)
-            if not token_data:
-                logger.warning(
-                    f"No refresh token found for session {session_id[:16]}..."
+            user_id = await storage.get_browser_session_user(session_id)
+            if not user_id:
+                logger.info(
+                    "Browser session not found or expired (sid=%s…)", session_id[:8]
                 )
                 return None
 
-            # Session is valid - use session_id (which is user_id from ID token) as username
-            username = session_id
-            logger.info(f"✓ Session authenticated successfully: {username[:16]}...")
+            # Defense-in-depth: only authenticate sessions for users that
+            # actually have a refresh token persisted. Logout deletes both,
+            # so an expired/revoked user state will fail closed here.
+            token_data = await storage.get_refresh_token(user_id)
+            if not token_data:
+                logger.warning(
+                    "Session %s… has no refresh token for user %s; rejecting",
+                    session_id[:8],
+                    user_id,
+                )
+                # Proactively evict the orphan so the table doesn't accumulate
+                # rows that the auth check will keep rejecting until TTL
+                # cleanup (PR #758 round-7 minor).
+                try:
+                    await storage.delete_browser_session(session_id)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to delete orphaned browser session %s…: %s",
+                        session_id[:8],
+                        e,
+                    )
+                return None
 
-            return AuthCredentials(["authenticated"]), SimpleUser(username)
+            return AuthCredentials(["authenticated"]), SimpleUser(user_id)
 
         except Exception as e:
-            logger.warning(f"Session validation error: {e}")
+            logger.warning("Session validation error: %s", e)
             return None

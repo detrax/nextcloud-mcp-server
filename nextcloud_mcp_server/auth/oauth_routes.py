@@ -30,13 +30,17 @@ from typing import Any
 from urllib.parse import unquote, urlencode
 from urllib.parse import urlparse as parse_url
 
-import jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.browser_oauth_routes import oauth_login_callback
 from nextcloud_mcp_server.auth.client_registry import get_client_registry
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
+from nextcloud_mcp_server.auth.token_utils import (
+    IdTokenVerificationError,
+    get_oidc_discovery,
+    verify_id_token,
+)
 from nextcloud_mcp_server.config import get_settings
 
 from ..http import nextcloud_httpx_client
@@ -88,6 +92,7 @@ class ASProxySession:
     code_challenge: str
     code_challenge_method: str
     requested_scopes: str
+    nonce: str
     created_at: float = field(default_factory=time.time)
     expires_at: float = field(default_factory=lambda: time.time() + 600)
 
@@ -99,10 +104,6 @@ class ASProxySession:
 # In-memory stores (single-instance, ephemeral)
 _proxy_codes: dict[str, ProxyCodeEntry] = {}
 _as_proxy_sessions: dict[str, ASProxySession] = {}
-
-# OIDC discovery document cache (URL → (expires_at, data))
-_discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_DISCOVERY_CACHE_TTL = 300  # 5 minutes
 
 # DCR rate limiting (IP → [timestamps])
 _dcr_rate_limit: dict[str, list[float]] = {}
@@ -133,26 +134,6 @@ def _transform_scopes_for_idp(scopes: str, resource_server_id: str) -> str:
         else f"{resource_server_id}/{s}"
         for s in scopes.split()
     )
-
-
-async def _get_cached_discovery(url: str) -> dict[str, Any]:
-    """Fetch OIDC discovery document with caching (5-minute TTL).
-
-    Follows redirects so the configured discovery URL works against Nextcloud
-    instances without pretty URLs enabled, where ``/.well-known/openid-configuration``
-    issues a 301 to ``/index.php/.well-known/openid-configuration``.
-    """
-    now = time.time()
-    if url in _discovery_cache:
-        expires_at, data = _discovery_cache[url]
-        if now < expires_at:
-            return data
-    async with nextcloud_httpx_client(follow_redirects=True) as http_client:
-        response = await http_client.get(url)
-        response.raise_for_status()
-        data = response.json()
-    _discovery_cache[url] = (now + _DISCOVERY_CACHE_TTL, data)
-    return data
 
 
 def _cleanup_expired_proxy_codes() -> None:
@@ -286,7 +267,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     )
 
     if not is_valid:
-        logger.warning(f"Client validation failed: {error_msg}")
+        logger.warning("Client validation failed: %s", error_msg)
         return JSONResponse(
             {
                 "error": "unauthorized_client",
@@ -313,6 +294,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     # We do NOT forward PKCE to Nextcloud — the MCP server is a confidential client.
     server_state = secrets.token_urlsafe(32)
 
+    # OIDC nonce binds the IdP's ID token to THIS authorization request,
+    # blocking ID-token replay across flows (PR #758 round-2 finding 2).
+    server_nonce = secrets.token_urlsafe(32)
+
     requested_scope = request.query_params.get("scope", "")
     default_scopes = "openid profile email"
     resource_scopes = oauth_config.get("scopes", "")
@@ -330,6 +315,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         requested_scopes=scopes,
+        nonce=server_nonce,
     )
 
     # Use MCP server's own client_id with Nextcloud
@@ -340,10 +326,10 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     callback_uri = f"{mcp_server_url}/oauth/callback"
 
     logger.info("AS Proxy: Intermediary authorization flow")
-    logger.info(f"  Client: {client_id}")
-    logger.info(f"  MCP server client_id: {mcp_server_client_id}")
-    logger.info(f"  Server callback: {callback_uri}")
-    logger.info(f"  Scopes: {scopes}")
+    logger.info("  Client: %s", client_id)
+    logger.info("  MCP server client_id: %s", mcp_server_client_id)
+    logger.info("  Server callback: %s", callback_uri)
+    logger.info("  Scopes: %s", scopes)
 
     # Discover Nextcloud authorization endpoint
     discovery_url = oauth_config.get("discovery_url")
@@ -356,7 +342,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Replace internal Docker hostname with public URL for browser access
@@ -383,7 +369,7 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
     )
     idp_scope_str = _transform_scopes_for_idp(scopes, resource_server_id)
     if resource_server_id:
-        logger.info(f"  IdP scopes (prefixed): {idp_scope_str}")
+        logger.info("  IdP scopes (prefixed): %s", idp_scope_str)
 
     # Redirect to Nextcloud with MCP server's own client_id (no PKCE — confidential client)
     idp_params = {
@@ -392,12 +378,13 @@ async def oauth_authorize(request: Request) -> RedirectResponse | JSONResponse:
         "response_type": "code",
         "scope": idp_scope_str,
         "state": server_state,
+        "nonce": server_nonce,
         "prompt": "consent",
         "resource": f"{mcp_server_url}/mcp",  # MCP server audience
     }
 
     auth_url = f"{authorization_endpoint}?{urlencode(idp_params)}"
-    logger.info(f"Redirecting to Nextcloud OIDC: {auth_url.split('?')[0]}")
+    logger.info("Redirecting to Nextcloud OIDC: %s", auth_url.split("?")[0])
 
     return RedirectResponse(auth_url, status_code=302)
 
@@ -466,7 +453,7 @@ async def oauth_authorize_nextcloud(
         # supporting the offline_access scope.
         discovery_url = oauth_config.get("discovery_url")
         if discovery_url:
-            disc = await _get_cached_discovery(discovery_url)
+            disc = await get_oidc_discovery(discovery_url)
             scopes_supported = disc.get("scopes_supported")
             if scopes_supported is None or "offline_access" in scopes_supported:
                 scopes += " offline_access"
@@ -478,7 +465,12 @@ async def oauth_authorize_nextcloud(
     digest = hashlib.sha256(code_verifier.encode()).digest()
     code_challenge = urlsafe_b64encode(digest).decode().rstrip("=")
 
-    # Store code_verifier in session for retrieval during callback
+    # OIDC nonce binds the IdP-returned ID token to THIS auth request
+    # (PR #758 round-3 finding 1). Browser flow + AS proxy already do
+    # this; Flow 2 is the third path and was missing it.
+    nonce = secrets.token_urlsafe(32)
+
+    # Store code_verifier + nonce in session for retrieval during callback
     storage = oauth_ctx["storage"]
     await storage.store_oauth_session(
         session_id=state,
@@ -487,7 +479,11 @@ async def oauth_authorize_nextcloud(
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
-        mcp_authorization_code=code_verifier,  # Store code_verifier here temporarily
+        # `mcp_authorization_code` field reused to store the PKCE
+        # code_verifier (one-time-use). Renaming the column requires a
+        # schema migration.
+        mcp_authorization_code=code_verifier,
+        nonce=nonce,
         flow_type="flow2",
         ttl_seconds=600,  # 10 minutes
     )
@@ -503,7 +499,7 @@ async def oauth_authorize_nextcloud(
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     authorization_endpoint = discovery["authorization_endpoint"]
 
     # Fix internal hostname for browser access
@@ -525,6 +521,7 @@ async def oauth_authorize_nextcloud(
         "response_type": "code",
         "scope": scopes,
         "state": state,
+        "nonce": nonce,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
         "prompt": "consent",  # Force consent to show resource access
@@ -559,7 +556,7 @@ async def oauth_callback_nextcloud(request: Request):
         error_description = request.query_params.get(
             "error_description", "Authorization failed"
         )
-        logger.error(f"Flow 2 authorization error: {error} - {error_description}")
+        logger.error("Flow 2 authorization error: %s - %s", error, error_description)
         return JSONResponse(
             {
                 "error": error,
@@ -585,15 +582,32 @@ async def oauth_callback_nextcloud(request: Request):
     storage: RefreshTokenStorage = oauth_ctx["storage"]
     oauth_config = oauth_ctx["config"]
 
-    # Retrieve code_verifier from session storage (PKCE required by Nextcloud OIDC)
-    code_verifier = ""
+    # Retrieve code_verifier + nonce from session storage (PKCE + OIDC
+    # nonce binding both required for Flow 2 — round-3 finding 1). Fail
+    # closed when the row is missing/expired so PKCE + nonce verification
+    # are not silently bypassed (round-6 review).
     oauth_session = await storage.get_oauth_session(state)
-    if oauth_session:
-        # code_verifier was stored in mcp_authorization_code field
-        code_verifier = oauth_session.get("mcp_authorization_code", "")
-        logger.info(
-            f"Retrieved code_verifier for Flow 2 callback (state={state[:16]}...)"
+    if not oauth_session:
+        logger.warning("Flow 2 callback received unknown/expired state=%s", state[:16])
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": (
+                    "Unknown or expired session — please retry the OAuth flow"
+                ),
+            },
+            status_code=400,
         )
+    # `mcp_authorization_code` field reused to store the PKCE code_verifier
+    # (one-time-use). Renaming the column requires a schema migration.
+    code_verifier = oauth_session.get("mcp_authorization_code", "")
+    nonce = oauth_session.get("nonce")
+    logger.info("Retrieved code_verifier for Flow 2 callback (state=%s…)", state[:16])
+    # One-time-use session: delete eagerly so the stored code_verifier
+    # can't be replayed for the remainder of the oauth_sessions TTL.
+    # Mirrors browser_oauth_routes.oauth_login_callback (PR #758
+    # follow-up review).
+    await storage.delete_oauth_session(state)
 
     # Exchange code for tokens
     mcp_server_client_id = os.getenv(
@@ -615,7 +629,7 @@ async def oauth_callback_nextcloud(request: Request):
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Build token exchange params
@@ -643,23 +657,36 @@ async def oauth_callback_nextcloud(request: Request):
     refresh_token = token_data.get("refresh_token")
     id_token = token_data.get("id_token")
 
-    # Decode ID token to get user info
-    logger.info("=" * 60)
-    logger.info("oauth_callback_nextcloud: Extracting user_id from ID token")
-    logger.info("=" * 60)
+    # Verify ID token signature + claims (issue #626 finding 1).
+    # ``expected_nonce`` is the per-request nonce stored on the
+    # oauth_session row (PR #758 round-3 finding 1). ``nonce`` is already
+    # ``str | None`` and ``secrets.token_urlsafe`` never produces an empty
+    # string, so passing it directly is correct — pre-migration-006 rows
+    # surface as ``None`` from ``oauth_session.get("nonce")``, which
+    # ``verify_id_token`` already treats as "skip the check".
+    logger.info("oauth_callback_nextcloud: Verifying ID token")
     try:
-        userinfo = jwt.decode(id_token, options={"verify_signature": False})
-        user_id = userinfo.get("sub")
-        username = userinfo.get("preferred_username") or userinfo.get("email")
-        logger.info("  ✓ ID token decode SUCCESSFUL")
-        logger.info(f"  Extracted user_id: {user_id}")
-        logger.info(f"  Username: {username}")
-        logger.info(f"  ID token payload keys: {list(userinfo.keys())}")
-        logger.info(f"Flow 2: User {username} provisioned resource access")
-    except Exception as e:
-        logger.error(f"  ✗ ID token decode FAILED: {type(e).__name__}: {e}")
-        user_id = "unknown"
-        logger.error(f"  Using fallback user_id: {user_id}")
+        userinfo = await verify_id_token(
+            id_token,
+            discovery_url=discovery_url,
+            expected_audience=mcp_server_client_id,
+            expected_nonce=nonce,
+        )
+    except IdTokenVerificationError as e:
+        logger.error("ID token verification failed: %s", e)
+        return JSONResponse(
+            {
+                "error": "invalid_token",
+                "error_description": "ID token failed verification",
+            },
+            status_code=400,
+        )
+
+    user_id = userinfo["sub"]
+    username = userinfo.get("preferred_username") or userinfo.get("email")
+    logger.info(
+        "Flow 2: User %s (sub=%s) provisioned resource access", username, user_id
+    )
 
     # Store master refresh token for Flow 2
     if refresh_token:
@@ -672,17 +699,22 @@ async def oauth_callback_nextcloud(request: Request):
         refresh_expires_in = token_data.get("refresh_expires_in")
         refresh_expires_at = None
         if refresh_expires_in:
-            refresh_expires_at = int(time.time()) + refresh_expires_in
-            logger.info(f"  refresh_expires_in: {refresh_expires_in}s")
-            logger.info(f"  refresh_expires_at: {refresh_expires_at}")
+            # Some IdPs (e.g. AWS Cognito) return refresh_expires_in as a JSON
+            # string rather than an int; coerce to be safe.
+            refresh_expires_at = int(time.time()) + int(refresh_expires_in)
+            logger.debug("  refresh_expires_in: %ss", refresh_expires_in)
+            logger.debug("  refresh_expires_at: %s", refresh_expires_at)
 
-        logger.info("Storing refresh token:")
-        logger.info(f"  user_id: {user_id}")
-        logger.info("  flow_type: flow2")
-        logger.info("  token_audience: nextcloud")
-        logger.info(f"  provisioning_client_id: {state[:16]}...")
-        logger.info(f"  scopes: {granted_scopes}")
-        logger.info(f"  expires_at: {refresh_expires_at}")
+        # Identity-bearing fields stay at DEBUG so they don't reach
+        # multi-tenant log aggregation on every Flow 2 provision (PR #758
+        # round-7 minor).
+        logger.debug("Storing refresh token:")
+        logger.debug("  user_id: %s", user_id)
+        logger.debug("  flow_type: flow2")
+        logger.debug("  token_audience: nextcloud")
+        logger.debug("  provisioning_client_id: %s...", state[:16])
+        logger.debug("  scopes: %s", granted_scopes)
+        logger.debug("  expires_at: %s", refresh_expires_at)
 
         await storage.store_refresh_token(
             user_id=user_id,
@@ -693,8 +725,8 @@ async def oauth_callback_nextcloud(request: Request):
             scopes=granted_scopes,
             expires_at=refresh_expires_at,
         )
-        logger.info(f"✓ Stored Flow 2 master refresh token for user {user_id}")
-        logger.info("=" * 60)
+        logger.debug("✓ Stored Flow 2 master refresh token for user %s", user_id)
+        logger.debug("=" * 60)
 
     # Return success HTML page
     success_html = """
@@ -775,7 +807,7 @@ async def oauth_callback(request: Request):
         oauth_session.get("flow_type", "browser") if oauth_session else "browser"
     )
 
-    logger.info(f"Unified callback: flow_type={flow_type} (from session lookup)")
+    logger.info("Unified callback: flow_type=%s (from session lookup)", flow_type)
 
     if flow_type == "flow2":
         # Flow 2: Resource Provisioning - MCP server gets delegated Nextcloud access
@@ -789,7 +821,7 @@ async def oauth_callback(request: Request):
 
     else:
         # Unknown flow type
-        logger.warning(f"Unknown flow_type in OAuth session: {flow_type}")
+        logger.warning("Unknown flow_type in OAuth session: %s", flow_type)
         return JSONResponse(
             {
                 "error": "invalid_request",
@@ -819,7 +851,7 @@ async def _oauth_callback_as_proxy(
         error_description = request.query_params.get(
             "error_description", "Authorization failed"
         )
-        logger.error(f"AS proxy callback error: {error} - {error_description}")
+        logger.error("AS proxy callback error: %s - %s", error, error_description)
 
         # Retrieve session to redirect back to client with error
         session = _as_proxy_sessions.pop(server_state, None)
@@ -903,7 +935,7 @@ async def _oauth_callback_as_proxy(
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Exchange auth code with Nextcloud (server-side, confidential client, no PKCE)
@@ -939,6 +971,35 @@ async def _oauth_callback_as_proxy(
         "AS proxy: Successfully exchanged code for Nextcloud token "
         f"(token_type={nc_token_response.get('token_type')})"
     )
+
+    # Verify the ID token signature + claims before caching the response
+    # (PR #758 finding 1). Without this, a compromised IdP or tampered
+    # transport could plant arbitrary identity claims into the proxy code
+    # entry that gets handed back to the MCP client. Mirrors the
+    # verification done in oauth_callback_nextcloud.
+    #
+    # ``expected_nonce`` is the per-request nonce we forwarded to the IdP
+    # in oauth_authorize (PR #758 round-2 finding 2). ASProxySession is
+    # in-memory only and ``nonce`` is now a required field, so for any
+    # session created via the current code path this is always set; the
+    # ``or None`` is defence-in-depth and a no-op in practice.
+    id_token = nc_token_response.get("id_token")
+    try:
+        await verify_id_token(
+            id_token,
+            discovery_url=discovery_url,
+            expected_audience=mcp_server_client_id,
+            expected_nonce=session.nonce or None,
+        )
+    except IdTokenVerificationError as e:
+        logger.error("AS proxy: ID token verification failed: %s", e)
+        return JSONResponse(
+            {
+                "error": "invalid_token",
+                "error_description": "ID token failed verification",
+            },
+            status_code=400,
+        )
 
     # Generate a proxy authorization code for the client
     proxy_code = secrets.token_urlsafe(32)
@@ -1145,7 +1206,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     if not _verify_pkce_s256(code_verifier, entry.code_challenge):
-        logger.warning(f"PKCE verification failed for client {entry.client_id}")
+        logger.warning("PKCE verification failed for client %s", entry.client_id)
         return JSONResponse(
             {
                 "error": "invalid_grant",
@@ -1155,7 +1216,7 @@ async def _token_authorization_code(request: Request, form) -> JSONResponse:
         )
 
     logger.info(
-        f"AS proxy token: Returning Nextcloud token for client {entry.client_id}"
+        "AS proxy token: Returning Nextcloud token for client %s", entry.client_id
     )
 
     # Return the stored Nextcloud token response directly
@@ -1216,7 +1277,7 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
             status_code=500,
         )
 
-    discovery = await _get_cached_discovery(discovery_url)
+    discovery = await get_oidc_discovery(discovery_url)
     token_endpoint = discovery["token_endpoint"]
 
     # Proxy refresh request to Nextcloud
@@ -1288,7 +1349,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     # Remove timestamps outside the window
     timestamps = [t for t in timestamps if now - t < _DCR_RATE_LIMIT_WINDOW]
     if len(timestamps) >= _DCR_RATE_LIMIT_MAX:
-        logger.warning(f"DCR rate limit exceeded for {client_ip}")
+        logger.warning("DCR rate limit exceeded for %s", client_ip)
         return JSONResponse(
             {
                 "error": "too_many_requests",
@@ -1305,7 +1366,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
     registration_endpoint = None
     if discovery_url:
         try:
-            discovery = await _get_cached_discovery(discovery_url)
+            discovery = await get_oidc_discovery(discovery_url)
             registration_endpoint = discovery.get("registration_endpoint")
         except Exception:
             logger.warning("Failed to fetch OIDC discovery for DCR endpoint")
@@ -1324,7 +1385,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    logger.info(f"DCR proxy: Forwarding registration to {registration_endpoint}")
+    logger.info("DCR proxy: Forwarding registration to %s", registration_endpoint)
 
     async with nextcloud_httpx_client() as http_client:
         response = await http_client.post(
@@ -1360,7 +1421,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
             redirect_uris=redirect_uris,
             name=client_name,
         )
-        logger.info(f"DCR proxy: Registered client {new_client_id} in local registry")
+        logger.info("DCR proxy: Registered client %s in local registry", new_client_id)
 
     return JSONResponse(nc_response, status_code=response.status_code)
 

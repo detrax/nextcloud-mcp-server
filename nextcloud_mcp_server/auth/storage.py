@@ -29,9 +29,10 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiosqlite
 import anyio
@@ -139,9 +140,24 @@ class RefreshTokenStorage:
         1. New database: Run migrations from scratch
         2. Pre-Alembic database: Stamp with initial revision (no changes)
         3. Alembic-managed database: Upgrade to latest version
+
+        Raises:
+            RuntimeError: when the underlying SQLite library is older than
+                3.35, which is required for ``DELETE ... RETURNING`` used by
+                ``delete_browser_session`` (PR #758 round-5 review low 2).
+                Ubuntu 20.04 ships SQLite 3.31, so deployers on that
+                baseline must upgrade or use a newer Python image.
         """
         if self._initialized:
             return
+
+        if sqlite3.sqlite_version_info < (3, 35):
+            raise RuntimeError(
+                "SQLite >= 3.35 is required (DELETE ... RETURNING is used "
+                "by delete_browser_session); detected "
+                f"{sqlite3.sqlite_version}. Upgrade SQLite or use a Python "
+                "image with a newer bundled libsqlite3."
+            )
 
         # Ensure directory exists
         db_dir = Path(self.db_path).parent
@@ -205,11 +221,11 @@ class RefreshTokenStorage:
         self,
         user_id: str,
         refresh_token: str,
-        expires_at: Optional[int] = None,
+        expires_at: int | None = None,
         flow_type: str = "hybrid",
         token_audience: str = "nextcloud",
-        provisioning_client_id: Optional[str] = None,
-        scopes: Optional[list[str]] = None,
+        provisioning_client_id: str | None = None,
+        scopes: list[str] | None = None,
     ) -> None:
         """
         Store encrypted refresh token for user.
@@ -227,8 +243,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
         encrypted_token = self.cipher.encrypt(refresh_token.encode())
         now = int(time.time())
         scopes_json = json.dumps(scopes) if scopes else None
@@ -313,7 +335,7 @@ class RefreshTokenStorage:
 
         logger.debug(f"Cached user profile for {user_id}")
 
-    async def get_user_profile(self, user_id: str) -> Optional[dict[str, Any]]:
+    async def get_user_profile(self, user_id: str) -> dict[str, Any] | None:
         """
         Retrieve cached user profile data.
 
@@ -351,7 +373,7 @@ class RefreshTokenStorage:
 
         return profile_data
 
-    async def get_refresh_token(self, user_id: str) -> Optional[dict]:
+    async def get_refresh_token(self, user_id: str) -> dict | None:
         """
         Retrieve and decrypt refresh token for user.
 
@@ -374,8 +396,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         start_time = time.time()
         try:
@@ -444,7 +472,7 @@ class RefreshTokenStorage:
 
     async def get_refresh_token_by_provisioning_client_id(
         self, provisioning_client_id: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve and decrypt refresh token by provisioning_client_id (state parameter).
 
@@ -461,8 +489,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
@@ -617,8 +651,8 @@ class RefreshTokenStorage:
         client_id_issued_at: int,
         client_secret_expires_at: int,
         redirect_uris: list[str],
-        registration_access_token: Optional[str] = None,
-        registration_client_uri: Optional[str] = None,
+        registration_access_token: str | None = None,
+        registration_client_uri: str | None = None,
     ) -> None:
         """
         Store encrypted OAuth client credentials.
@@ -635,8 +669,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         # Encrypt sensitive data
         encrypted_secret = self.cipher.encrypt(client_secret.encode())
@@ -689,7 +729,7 @@ class RefreshTokenStorage:
             auth_method="oauth",
         )
 
-    async def get_oauth_client(self) -> Optional[dict]:
+    async def get_oauth_client(self) -> dict | None:
         """
         Retrieve and decrypt OAuth client credentials.
 
@@ -708,8 +748,14 @@ class RefreshTokenStorage:
         if not self._initialized:
             await self.initialize()
 
-        # Type narrowing: cipher is set after initialize()
-        assert self.cipher is not None
+        # ``assert`` is stripped under ``python -O``, which would silently
+        # turn a missing TOKEN_ENCRYPTION_KEY into an ``AttributeError`` on
+        # the next ``self.cipher.encrypt(...)``. Raise explicitly instead
+        # (PR #758 round-4 review medium 1).
+        if self.cipher is None:
+            raise RuntimeError(
+                "TOKEN_ENCRYPTION_KEY is not set — token storage operations unavailable"
+            )
 
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
@@ -827,9 +873,9 @@ class RefreshTokenStorage:
         self,
         event: str,
         user_id: str,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        auth_method: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        auth_method: str | None = None,
     ) -> None:
         """
         Log operation to audit log.
@@ -866,8 +912,8 @@ class RefreshTokenStorage:
 
     async def get_audit_logs(
         self,
-        user_id: Optional[str] = None,
-        since: Optional[int] = None,
+        user_id: str | None = None,
+        since: int | None = None,
         limit: int = 100,
     ) -> list[dict]:
         """
@@ -909,14 +955,15 @@ class RefreshTokenStorage:
         self,
         session_id: str,
         client_redirect_uri: str,
-        state: Optional[str] = None,
-        code_challenge: Optional[str] = None,
-        code_challenge_method: Optional[str] = None,
-        mcp_authorization_code: Optional[str] = None,
-        client_id: Optional[str] = None,
+        state: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        mcp_authorization_code: str | None = None,
+        client_id: str | None = None,
         flow_type: str = "hybrid",
         is_provisioning: bool = False,
-        requested_scopes: Optional[str] = None,
+        requested_scopes: str | None = None,
+        nonce: str | None = None,
         ttl_seconds: int = 600,  # 10 minutes
     ) -> None:
         """
@@ -933,6 +980,8 @@ class RefreshTokenStorage:
             flow_type: Type of flow ('hybrid', 'flow1', 'flow2')
             is_provisioning: Whether this is a Flow 2 provisioning session
             requested_scopes: Requested OAuth scopes
+            nonce: OIDC ``nonce`` value bound to this auth request, returned
+                in the ID token and verified on callback (PR #758 finding 2).
             ttl_seconds: Session TTL in seconds
         """
         if not self._initialized:
@@ -947,8 +996,8 @@ class RefreshTokenStorage:
                 INSERT INTO oauth_sessions
                 (session_id, client_id, client_redirect_uri, state, code_challenge,
                  code_challenge_method, mcp_authorization_code, flow_type,
-                 is_provisioning, requested_scopes, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_provisioning, requested_scopes, nonce, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -961,6 +1010,7 @@ class RefreshTokenStorage:
                     flow_type,
                     is_provisioning,
                     requested_scopes,
+                    nonce,
                     now,
                     expires_at,
                 ),
@@ -969,7 +1019,7 @@ class RefreshTokenStorage:
 
         logger.debug(f"Stored OAuth session {session_id} (expires in {ttl_seconds}s)")
 
-    async def get_oauth_session(self, session_id: str) -> Optional[dict]:
+    async def get_oauth_session(self, session_id: str) -> dict | None:
         """
         Retrieve OAuth session by session ID.
 
@@ -1001,7 +1051,7 @@ class RefreshTokenStorage:
 
     async def get_oauth_session_by_mcp_code(
         self, mcp_authorization_code: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve OAuth session by MCP authorization code.
 
@@ -1037,9 +1087,9 @@ class RefreshTokenStorage:
     async def update_oauth_session(
         self,
         session_id: str,
-        user_id: Optional[str] = None,
-        idp_access_token: Optional[str] = None,
-        idp_refresh_token: Optional[str] = None,
+        user_id: str | None = None,
+        idp_access_token: str | None = None,
+        idp_refresh_token: str | None = None,
     ) -> bool:
         """
         Update OAuth session with IdP token data.
@@ -1130,6 +1180,140 @@ class RefreshTokenStorage:
 
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} expired OAuth session(s)")
+
+        return deleted
+
+    # ============================================================================
+    # Browser Sessions (OAuth admin UI)
+    # ============================================================================
+    #
+    # Maps a cryptographically random `session_id` (cookie value) to the
+    # authenticated user_id. Replaces the prior `mcp_session=<user_id>`
+    # cookie pattern (issue #626 finding 2). Cookie value is opaque, expires,
+    # and can be revoked server-side without forcing the user to roll their
+    # IdP `sub`.
+
+    async def create_browser_session(
+        self,
+        session_id: str,
+        user_id: str,
+        ttl_seconds: int = 86400 * 30,
+    ) -> None:
+        """Persist a random session_id → user_id mapping for browser auth."""
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+        expires_at = now + ttl_seconds
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO browser_sessions
+                (session_id, user_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, user_id, now, expires_at),
+            )
+            await db.commit()
+
+        logger.debug(
+            "Stored browser session %s for user %s (expires in %ss)",
+            session_id[:8],
+            user_id,
+            ttl_seconds,
+        )
+
+        # Audit log to match the pattern used by the other security-relevant
+        # storage operations (PR #758 round-3 nit 5). Browser session
+        # establishment is a security-relevant event.
+        await self._audit_log(
+            event="create_browser_session",
+            user_id=user_id,
+            resource_type="browser_session",
+            resource_id=session_id[:8],
+        )
+
+    async def get_browser_session_user(self, session_id: str) -> str | None:
+        """Look up the user_id bound to a browser session_id, or None.
+
+        Returns None when the session is unknown or expired. Expired rows
+        are deleted on encounter to keep the table small.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT user_id, expires_at FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        if row["expires_at"] < time.time():
+            logger.debug("Browser session %s expired", session_id[:8])
+            await self.delete_browser_session(session_id)
+            return None
+
+        return row["user_id"]
+
+    async def delete_browser_session(self, session_id: str) -> bool:
+        """Delete a browser session row. Returns True when a row was removed."""
+        if not self._initialized:
+            await self.initialize()
+
+        # DELETE ... RETURNING (SQLite ≥ 3.35) reads ``user_id`` atomically
+        # with the delete itself, so the audit log can't race against a
+        # concurrent delete that empties the row between SELECT and DELETE
+        # (PR #758 round-3 review).
+        user_id: str | None = None
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "DELETE FROM browser_sessions WHERE session_id = ? RETURNING user_id",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            await db.commit()
+
+        deleted = row is not None
+        if deleted:
+            user_id = row[0]
+            logger.debug("Deleted browser session %s", session_id[:8])
+            if user_id:
+                await self._audit_log(
+                    event="delete_browser_session",
+                    user_id=user_id,
+                    resource_type="browser_session",
+                    resource_id=session_id[:8],
+                )
+        return deleted
+
+    async def cleanup_expired_browser_sessions(self) -> int:
+        """Remove expired ``browser_sessions`` rows.
+
+        Returns the number of rows deleted. Called by the periodic cleanup
+        task in ``app.py``. Without this users who never explicitly log out
+        leave session rows behind that only get deleted lazily on lookup
+        (PR #758 finding 6).
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        now = int(time.time())
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM browser_sessions WHERE expires_at < ?", (now,)
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+
+        if deleted > 0:
+            logger.info("Cleaned up %s expired browser session(s)", deleted)
 
         return deleted
 
@@ -1312,7 +1496,7 @@ class RefreshTokenStorage:
             auth_method="app_password",
         )
 
-    async def get_app_password(self, user_id: str) -> Optional[str]:
+    async def get_app_password(self, user_id: str) -> str | None:
         """
         Retrieve and decrypt app password for a user.
 

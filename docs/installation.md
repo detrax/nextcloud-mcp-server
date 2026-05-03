@@ -5,6 +5,7 @@ This guide covers installing the Nextcloud MCP server on your system.
 ## Prerequisites
 
 - **Python 3.11+** - Check with `python3 --version`
+- **SQLite 3.35+** - Check with `python3 -c "import sqlite3; print(sqlite3.sqlite_version)"`. The OAuth session storage uses `DELETE ... RETURNING`, which is only available from SQLite 3.35 (March 2021). Ubuntu 20.04 ships SQLite 3.31 and is **not** supported; upgrade the host or run from the Docker image, which bundles a newer libsqlite3.
 - **Access to a Nextcloud instance** - Self-hosted or cloud-hosted
 - **Administrator access** *(optional)* - Only needed to customise app-password policies in Nextcloud settings; not required for any deployment mode (single-user, multi-user BasicAuth, or Login Flow v2)
 
