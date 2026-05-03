@@ -933,3 +933,200 @@ async def diana_login_flow_mcp_client(
         password=test_users_setup["diana"]["password"],
     ):
         yield session
+
+
+# Static OIDC client used by the management API integration tests.
+# Matches the value `mcp-login-flow` and `mcp-multi-user-basic` allowlist
+# (`ALLOWED_MGMT_CLIENT=nextcloudMcpServerUIPublicClient`) so tokens issued
+# to it pass the management API allowlist check.
+STATIC_MGMT_CLIENT_ID = "nextcloudMcpServerUIPublicClient"
+
+
+@pytest.fixture(scope="session")
+async def login_flow_static_client_credentials(anyio_backend, oauth_callback_server):
+    """Pre-create the static OIDC client `nextcloudMcpServerUIPublicClient`
+    via `occ oidc:create` with the test's OAuth callback URL.
+
+    The static client_id is allowlisted on `mcp-login-flow` (and
+    `mcp-multi-user-basic`) via `ALLOWED_MGMT_CLIENT`, so tokens it issues
+    pass the management API allowlist check. Uses a confidential JWT-token
+    client to match production Astrolabe configuration.
+
+    Yields: (client_id, client_secret, callback_url, token_endpoint, authorization_endpoint)
+    """
+    import json
+    import subprocess
+
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    if not nextcloud_host:
+        pytest.skip("Static client tests require NEXTCLOUD_HOST")
+
+    auth_states, callback_url = oauth_callback_server
+    client_id = STATIC_MGMT_CLIENT_ID
+
+    # Idempotent: remove if a previous session left one behind
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "app",
+            "php",
+            "/var/www/html/occ",
+            "oidc:remove",
+            client_id,
+        ],
+        check=False,
+        capture_output=True,
+    )
+
+    logger.info(f"Creating static OIDC client {client_id} with callback {callback_url}")
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "app",
+            "php",
+            "/var/www/html/occ",
+            "oidc:create",
+            "Login Flow Static Client (test)",
+            callback_url,
+            "--client_id",
+            client_id,
+            "--type",
+            "confidential",
+            "--flow",
+            "code",
+            "--token_type",
+            "jwt",
+            "--resource_url",
+            LOGIN_FLOW_MCP_BASE_URL,
+            "--allowed_scopes",
+            DEFAULT_FULL_SCOPES,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        client_output = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"occ oidc:create returned non-JSON output: {result.stdout[:200]!r}"
+        ) from e
+    client_secret = client_output.get("client_secret")
+    if not client_secret:
+        raise ValueError("occ oidc:create did not return client_secret in JSON output")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        discovery_response = await http_client.get(
+            f"{nextcloud_host}/.well-known/openid-configuration"
+        )
+        discovery_response.raise_for_status()
+        oidc_config = discovery_response.json()
+
+    yield (
+        client_id,
+        client_secret,
+        callback_url,
+        oidc_config["token_endpoint"],
+        oidc_config["authorization_endpoint"],
+    )
+
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "app",
+            "php",
+            "/var/www/html/occ",
+            "oidc:remove",
+            client_id,
+        ],
+        check=False,
+        capture_output=True,
+    )
+
+
+@pytest.fixture(scope="session")
+async def login_flow_static_client_token(
+    anyio_backend,
+    browser,
+    login_flow_static_client_credentials,
+    oauth_callback_server,
+) -> str:
+    """Drive the OAuth auth-code flow using the static OIDC client and
+    return the raw access_token string.
+
+    Mirrors `login_flow_oauth_token` but feeds it static credentials instead
+    of a DCR-generated client. Required for hitting management API
+    endpoints which gate on `ALLOWED_MGMT_CLIENT`.
+    """
+    nextcloud_host = os.getenv("NEXTCLOUD_HOST")
+    username = os.getenv("NEXTCLOUD_USERNAME")
+    password = os.getenv("NEXTCLOUD_PASSWORD")
+    if not all([nextcloud_host, username, password]):
+        pytest.skip(
+            "Static client OAuth requires NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD"
+        )
+
+    auth_states, _ = oauth_callback_server
+    client_id, client_secret, callback_url, token_endpoint, authorization_endpoint = (
+        login_flow_static_client_credentials
+    )
+
+    state = secrets.token_urlsafe(32)
+    scopes_encoded = quote(DEFAULT_FULL_SCOPES, safe="")
+    auth_url = (
+        f"{authorization_endpoint}?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={quote(callback_url, safe='')}&"
+        f"state={state}&"
+        f"scope={scopes_encoded}"
+    )
+
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+    try:
+        await page.goto(auth_url, wait_until="networkidle", timeout=60000)
+        if "/login" in page.url or "/index.php/login" in page.url:
+            await page.wait_for_selector('input[name="user"]', timeout=10000)
+            await page.fill('input[name="user"]', username)
+            await page.fill('input[name="password"]', password)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("networkidle", timeout=60000)
+        try:
+            await _handle_oauth_consent_screen(page, username)
+        except Exception:
+            pass
+
+        start = time.time()
+        while state not in auth_states:
+            if time.time() - start > 30:
+                raise TimeoutError("Timeout waiting for OAuth callback")
+            await anyio.sleep(0.5)
+        auth_code = auth_states[state]
+    finally:
+        await context.close()
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        token_response = await http_client.post(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+
+    return token_data["access_token"]
