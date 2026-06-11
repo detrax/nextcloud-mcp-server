@@ -5,6 +5,1593 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.114.0 (2026-06-11)
+
+### BREAKING CHANGE
+
+- PDFs are re-chunked page-aware by default. Existing
+deployments will re-index PDF content on the next vector sync (different
+chunk counts and page_number labels). Set DOCUMENT_CHUNK_PAGE_AWARE=false
+to retain the previous char-based behaviour.
+- /api/v1/vector-sync/status field `indexed_documents` now holds
+the distinct-document count (was the chunk count); the chunk count moved to the
+new `indexed_chunks` field. The Astrolabe UI + the nc_get_vector_sync_status MCP
+tool / userinfo page are harmonized in a follow-up (Deck #195).
+- the external-NATS-ingest env vars are removed
+(INGEST_MODE, STATUS_BACKEND, INGEST_BUS_URL, INGEST_BUS_NUM_REPLICAS,
+FACT_EVENT_EMITTER). Use INGEST_QUEUE (memory|postgres) and the `worker`
+command instead. TENANT_ID is retained (no longer NATS-subject-charset-validated).
+- deck list tools now default to detail="summary" and
+status="open". The include_archived_cards parameter is replaced by status
+(use status="all" to include archived cards); pass detail="full" to restore
+the previous per-card shape.
+- ENABLE_MULTI_USER_BASIC_AUTH is no longer read from
+the environment, and setting it now raises a startup ValueError with
+a migration message. Replace `ENABLE_MULTI_USER_BASIC_AUTH=true` with
+`MCP_DEPLOYMENT_MODE=multi_user_basic`. The same loud-deprecation
+check is also applied to the recently-removed ENABLE_LOGIN_FLOW —
+replace with `MCP_DEPLOYMENT_MODE=login_flow` (or drop both;
+`login_flow` is the auto-detect default when no other auth env vars
+are set).
+- `ENABLE_LOGIN_FLOW` is no longer read from the
+environment. Anyone who relied on `ENABLE_LOGIN_FLOW=true` to activate
+Login Flow v2 should set `MCP_DEPLOYMENT_MODE=login_flow` instead (or
+rely on it being the default when no other auth env vars are set).
+- MCP_DEPLOYMENT_MODE=oauth_single_audience is no longer
+accepted. Set MCP_DEPLOYMENT_MODE=login_flow (and keep
+ENABLE_LOGIN_FLOW=true) for the same deployment. The un-augmented
+OAuth path is no longer supported; if you previously ran the broken
+path, you can either configure Login Flow v2 (recommended) or switch
+to multi_user_basic / single_user_basic.
+
+### Feat
+
+- **document**: configurable OCR timeout and fail-fast PDF size guard
+- **worker**: structured logs + metrics + traces for ingest worker
+- **deck**: surface remapped labels in move-card response
+- **deck**: add deck_move_card_to_board tool for cross-board moves
+- **metering**: pages_embedded = real parsed page count
+- **usage**: rename metrics → tokens_embedded/pages_embedded + export token cost to Prometheus
+- **usage**: meter embedding tokens as embeddings_queries on both paths
+- **usage**: record per-tenant usage events into the app DB
+- **vector**: page-aware PDF chunking for predictable per-page retrieval
+- **vector**: index files in real time on vector-index tag changes
+- quality + scan OCR escalation trigger (junk-text-layer scans)
+- tier-3 OCR processor (gateway or direct Mistral)
+- tiered PDF processor with pypdfium2 fast path (deprecate pymupdf4llm)
+- use Nextcloud filename for indexed file title + reconcile on rename
+- tier-0 document classifier in shadow mode
+- harmonize MCP tool + userinfo page to documents/chunks model
+- backend-agnostic vector-sync gauges (pending/documents/chunks)
+- add IngestTransport port for local/distributed ingest backends
+- dedup shared-file parsing/embedding across users in vector sync
+- replace NATS ingest with procrastinate Postgres queue (#183)
+- **search**: support multiple folders in the semantic-search path filter
+- **observability**: astrolabe_* metrics + traces for the document pipeline
+- add Claude Desktop extension (.mcpb) for single-user stdio mode
+- **search**: ADR-027 Phase 2 — file-path filter
+- **search**: ADR-027 Phase 1 — modified-date range filter
+- **deck**: compact card/comment retrieval (summaries, filters, board overview)
+- **embedding**: gateway provider discovers dimension via GET /v1/models
+- **search**: ACL-aware vector filter via Nextcloud Shares lookup
+- add opt-in MCP decomposition hook points (design §10)
+- **api**: log inbound User-Agent on management API and webhook receiver
+- **webhooks**: add Deck card sync preset with vector indexing
+- **ci**: build arm64 Docker images natively on ubuntu-24.04-arm
+- **storage**: pluggable database backend via DATABASE_URL (ADR-026)
+- **deck**: add file/note attachment MCP tools
+- **contacts**: add nc_contacts_search_contacts free-text search tool
+- **vector**: replace inline page-image payloads with chunk_bbox (Deck #76)
+- **providers**: add Mistral embedding provider, route registry through dynaconf
+- **vector**: expand tagged directories for include + apply EXCLUDED_TAGS in scanner
+- **webdav**: add tag-based file exclusion (#710)
+- **deck**: add response filters and archived stacks tool
+- **auth**: elicit Astrolabe URL on missing app password
+- **search**: verify-on-read for semantic search results (ADR-019)
+- **infra**: distribute terraform modules under infra/terraform
+- **talk**: add MCP integration for Nextcloud Talk (spreed)
+- **auth**: drop test-client defaults, add ALLOWED_MGMT_CLIENT allowlist
+- **deck**: add card comment tools
+- add --version option to CLI
+- add stdio transport support for local MCP usage
+- add OIDC resource server scope prefix for Cognito compatibility
+- implement dynaconf configuration management (ADR-024 phases 1-3)
+- add web-based Login Flow v2 provisioning endpoint
+- add Tailscale Funnel config for Claude AI connector testing
+- add Nextcloud Collectives app support (#621)
+
+### Fix
+
+- **document**: catch httpx timeout from gateway OCR backend (#892 r3)
+- **document**: timeout reason bucket + Sonar https hotspot (#892 round 2)
+- **document**: apply OCR timeout to Mistral backend + review/Sonar fixes (#892)
+- **vector**: guard unbound doc_task + address review nits (#891)
+- **vector**: URL-encode DAV paths and unwrap TaskGroup exceptions
+- **worker**: clear Sonar S5332 hotspot + address review nits
+- **vector**: don't inflate qdrant-error metric on embed drops (#893 r3)
+- **vector**: nested-group drop classification + review/Sonar fixes (#893)
+- **vector**: retry transient embed errors so a pod rollover drops 0 docs
+- **deck**: make done-restore best-effort on move; cover combined states
+- **deck**: preserve done/archived and validate target board on move
+- convert astrolabe int provisioned_at to ISO before ProvisioningStatus
+- **ci**: gate can-i-deploy broker steps individually, not at job level
+- **app**: port-aware MCP URL fallback + clear readiness cache per lifespan (round 4)
+- **app**: cancel readiness loop on lifespan shutdown (review round 2)
+- **config**: correct OIDC token-type/scopes env keys; address review round 1
+- **health**: non-gating readiness probe; shared-task-group lifespan; settings migration
+- **documents**: guard Unix-only resource import for Windows (#877)
+- **usage**: drop redundant GatewayProvider.embed_batch override (round 3)
+- **usage**: embed query once across doc_types; address review round 1
+- **contacts**: address PR #876 round-2 nits
+- **contacts**: address PR #876 round-1 review
+- **contacts**: resolve real CardDAV object path for delete/update (fixes #874)
+- **vector**: address PR #873 round-2 review
+- **vector**: gate scanner app polls on per-user enabled apps
+- **deck**: include archived cards in list tools for status=all/archived
+- **vector**: skip page-assignment span/warning on empty boundaries
+- **vector**: route empty page_boundaries to char-based path; test ws offsets
+- **review**: unify "scanned" flag name + log image_coverage length drift
+- **review**: align classify_pdf routing with the hot path + scan-tail test
+- **review**: align quality threshold, cap + DRY scan coverage, warn on failure
+- close pypdfium2 page handle on error + cover classifier/OCR edge cases
+- **review**: _enum_fields validation, gate classify_from_text flags, OCR warnings
+- **review**: lock OCR backend init, warn on rollback fallthrough, zero-page metric
+- **review**: cache OCR backend, drop asserts, real pipeline_tier, guard zero-page
+- OCR escalation falls back to tier-1 result when OCR can't run
+- **review**: guard placeholder in scanner reconcile + test dual-write path
+- **review**: warn (not debug) on shadow-classify failure; tidy pymupdf usage
+- **review**: sample last page, document flags-vs-routing, add flag-path tests
+- lower DOCUMENT_PDF_GRAPHICS_LIMIT default 5000 -> 1000
+- **tests**: moderate re-scan interval to stop multi-user index churn
+- **tests**: fast vector-sync cadence for multi-user-basic CI service
+- **tests**: repair multi-user-basic Astrolabe integration suite
+- **review**: type timeout as float; document worker reuse + identity check
+- **review**: require graphics_limit>=1, type _index_document, cover rlimit branch
+- **review**: close doc via try/finally; don't count parse failures as indexed
+- isolate PDF parse in a subprocess so a bad file can't OOM the pod
+- resolve startup NameError in vector-sync metrics task
+- add metrics-interval validator + type/test gaps (review #850)
+- only merge prior acl_principals for files (review #848)
+- **webdav**: harden offset/key truthiness and escape SEARCH mime type
+- **webdav**: await fallback, guard dedup key, split paging for complexity
+- paginate tagged-folder SEARCH so the scanner discovers all files
+- make procrastinate ingest queue opt-in (default to in-process anyio)
+- initialize document processors in the ingest worker (PR #836 round-5)
+- address PR #836 round-3 review (lock-key invariant, single open)
+- address PR #836 round-2 review (connect/timeout/observability)
+- address PR #836 review — forward task_producer to MCP contexts + cleanups
+- **ci**: install procrastinate in the dev group so ty + unit tests resolve it
+- **search**: cap path_prefixes server-side; unify Iterable typing
+- **search**: cap path_prefixes at the MCP tool; widen path filter tests
+- **search**: address review feedback on multi-folder path filter
+- **observability**: address third review round
+- **observability**: address second review round
+- **observability**: address PR review + SonarCloud findings
+- **mcpb**: add Windows support via platform_overrides and run.cmd
+- **mcpb**: address review feedback on manifest and run.sh
+- **search**: address PR #834 re-review (403/404 coverage + docs)
+- **search**: address PR #834 review findings
+- **search**: gate verify-on-read file results on vector-index tag membership
+- **embedding**: normalize gateway base_url to the /v1 base path
+- **api**: distinguish Nextcloud 5xx from auth failure; tighten body parse (#824)
+- **api**: block cross-user delete and address review feedback (#824)
+- **api**: return 401 not 500 on failed app-password OCS validation (#824)
+- **auth**: authenticate stored app passwords with loginName, not UID
+- **vector**: make NATS status subscriber resilient at startup
+- stop S7632 flagging NOSONAR mentioned in prose comments
+- **vector-sync**: isolate per-app scans so a disabled Notes app can't abort sync
+- **api**: validate app password against Nextcloud using loginName, not UID
+- well-form NOSONAR suppressions (SonarCloud S7632/S7503)
+- address PR #814 reviewer follow-ups
+- address PR #814 review + SonarCloud gate
+- PR #813 review — cap unified_search multi-type pool; document deck self-only
+- cache app-password storage to avoid per-request Alembic upgrade race
+- PR #813 review — shared-file context in MCP tool path + viz over-fetch cap
+- address PR #813 review round 4 (log leak, cross-user chunk ctx, algo, overlap)
+- address PR #813 latest review (ACL-aware doc-type discovery, robustness)
+- address PR #813 review (owner_id index, cache bound, explicit param)
+- **search**: address PR #813 review (viz verify-on-read, owners cache, docs)
+- **auth**: make provision/revoke consistent with the app-password store
+- **auth**: login-flow provisioning — public login_url + session app passwords
+- **search**: verify shared files by global file id (ACL-aware)
+- **vector-sync**: use resolved collection name in orphan sweep
+- **vector-sync**: sweep placeholder orphans at Pod startup (#101)
+- **contacts**: surface ORG/TITLE/NOTE/URL/CATEGORIES/PHOTO on read (refs #716)
+- **contacts**: warn on unsupported dict/list email/tel update inputs
+- **contacts**: two PR #719 review bugs
+- **contacts**: close PR #719 second-pass review gaps
+- **contacts**: persist all documented fields on create (fixes #716)
+- **embedding**: instantiate BM25 singleton off the event loop
+- **storage**: address review on PR #799 (stale comments, docs deprecation, unit test)
+- **storage**: use NullPool for Postgres engine (cross-loop crashes under anyio TaskGroup)
+- **storage**: address PR #798 round-4 review (NOSONAR syntax + pg_advisory_lock + engine dispose + nits)
+- **storage**: address PR #798 round-3 review (SonarQube + pool sizing + RETURNING test)
+- **storage**: address PR #798 review feedback (credentials, asyncpg extra, TLS, pool)
+- **config**: emit background-ops advisory logs once per process
+- **config**: derive mode flags in Settings.__post_init__; address review round 2
+- **calendar**: preserve floating/TZID semantics across CalDAV roundtrip (#782)
+- **deck**: address review — notesPath key, scopes, modernize types
+- **health**: forward api-key to Qdrant /readyz so Cloud probes work
+- **vector**: address PR review round 17 + local-mode collection-creation regression
+- **qdrant**: use get_collection for startup probe (multi-tenant safe, take 2)
+- **qdrant**: use collection_exists for startup probe (multi-tenant safe)
+- **vector**: address PR review round 16 — type-aware index check, comments
+- **vector**: address PR review round 15 — concurrency, pagination, stale coercion
+- **vector**: address PR review round 14 — accurate offset-skip comment + news_item doc_id guard
+- **vector**: address PR review round 13 — index offset fields + tighten test
+- **vector**: address PR review round 12 — bool guard + strict doc_id validation
+- **vector**: address PR review round 11 — broaden offset-skip gate, clarify ordering
+- **vector**: address PR review round 10 — index chunk_index, harden index loop, lazy-init lock
+- **api**: validate doc_id at chunk-context handler boundary
+- **vector**: address PR review round 9 — drop redundant guard, add init lock, test float doc_id path
+- **vector**: guard _group_int_doc_ids against non-int doc_id values
+- **vector**: tighten get_chunk_bbox_and_page_from_qdrant doc_id to str
+- **login-flow**: allow Astrolabe's OAuth client on the management API
+- **vector**: address PR review round 8 — anyio convention + cosine-safe sentinel + dedup get_collection
+- **chunk-context**: address PR #767 review — extract bbox helper, fix page_number overwrite
+- **chunk-context**: address PR #767 review — drop dead PDF branch, redundant alias, add boundary tests
+- **chunk-context**: address PR #767 round-3 review — gate readability + legacy-fallback comment
+- **chunk-context**: propagate chunk_index=None through ChunkContext
+- **chunk-context**: address PR #767 round-2 review — gate, parity, doc
+- **chunk-context**: address PR #767 review — doc_type filter parity + tests
+- **viz_routes**: address PR #767 review — param parity + always-on page_number
+- **viz_routes**: validate chunk_index/total_chunks bounds in OAuth route
+- **chunk-context**: use indexed chunk_index lookup, fix close-after-use bug
+- **webdav**: decode percent-encoded names in PROPFIND/SEARCH responses
+- **vector**: add BOOL index for is_placeholder + correct wait=True docstring
+- **vector**: address PR review round 6 + SonarCloud findings
+- **vector**: address PR review round 5 — progress logging, summary visibility, sentinel split
+- **vector**: address PR review round 4 — backfill resilience + degraded-mode docs
+- **vector**: address PR review round 3 — sentinel guard, skip indexed fields, narrow types
+- **vector**: address PR review round 2 — status branching, doc_id guard, doc restore
+- **vector**: address PR review — wait=True backfill, batched writes, search helper
+- **vector**: normalize doc_id to str + add Qdrant keyword payload indexes
+- **webdav**: include fileid in find_by_type SEARCH + address PR #765 review
+- **webdav**: finish lazy-logging conversion in get_tag_by_name
+- **webdav**: address PR #764 review round 4
+- **webdav**: address PR #764 review round 3
+- **webdav**: drop anyio.Lock and add integration tests for tag exclusion
+- **webdav**: address PR #764 review round 2
+- **webdav**: address PR #764 review
+- **webhooks**: use HTTP 428 instead of 412 for unprovisioned users
+- **webhooks**: use app-password basic auth for NC API calls
+- **test**: retry consent handling in login_flow_static_client_token
+- **webhooks**: use OCS v2 capabilities for /api/v1/apps
+- **auth**: address PR #758 round-7 medium/minor review
+- **auth**: address PR #758 round-7 important review
+- **auth**: address PR #758 round-6 medium/low review
+- **auth**: address PR #758 round-5 medium/low review
+- **auth**: address PR #758 round-4 review
+- **auth**: address PR #758 round-3 final review
+- **auth**: address PR #758 round-3 review
+- **auth**: address PR #758 round-2 review
+- **auth**: address PR #758 auto-review (id-token verify, nonce, CI key)
+- **auth**: fail closed on missing sub claim, delete Flow 2 callback session
+- **auth**: address PR #758 follow-up review
+- **auth**: use Settings for OIDC env vars in token revocation helper
+- **auth**: address PR #758 review — XSS, CSRF, open redirect, JWKS cache
+- **auth**: harden OAuth/session for hosted multi-tenant deployment (#626)
+- **deck**: address PR #759 round-3 review feedback
+- **deck**: address PR #759 round-2 review feedback
+- **deck**: address PR #759 review feedback
+- **auth**: address PR #757 round-3 review feedback
+- **auth**: invalidate scope cache on web/REST provisioning paths
+- **auth**: address PR #757 round-2 review feedback
+- **auth**: address PR #757 review feedback
+- **deps**: update dependency icalendar to >=7.1.0,<7.2.0
+- **infra**: address PR review feedback on tf modules
+- **webhooks**: escape webhook_uri, lazy logging, document 401 header omission
+- **webhooks**: escape HTML in error responses, compare bearer as bytes
+- **webhooks**: authenticate deliveries via WEBHOOK_SECRET; review nits
+- **webhooks**: wire receiver to vector sync queue and fix registered URI
+- **vector-sync**: wire document streams into OAuthAppContext
+- **talk**: address remaining PR #741 reviewer feedback
+- **talk**: address PR #741 reviewer feedback
+- **oauth**: follow redirects when fetching OIDC discovery
+- **calendar**: thread raw credentials to caldav AsyncDAVClient
+- **deck**: address review feedback on card comment tools
+- **client**: route /apps/* through /index.php for non-pretty-URL installs
+- **notes**: defensively unwrap list-shaped Notes responses (refs #730)
+- **models**: coerce Contact.birthday + relax Table.owner_display_name
+- **api**: use stored app password for chunk-context and pdf-preview
+- **tests**: convert create_mcp_client_session to asynccontextmanager
+- coerce numeric nutrition values to strings in Cookbook model (fixes #708)
+- enable uvx/PyPI deployments without Docker assumptions
+- strip resource server prefix from JWT scopes for tool filtering
+- address third round of review feedback
+- address second round of review feedback
+- address PR review feedback and fix CI test failures
+- conditionally include offline_access based on IdP discovery
+- **deps**: update dependency mcp to >=1.27,<1.28
+- conditionally include offline_access in Flow 2 scope request
+- fall back to client_id when aud claim is absent (Cognito compat)
+- address second round of PR review for scope prefix
+- address PR review for OIDC scope prefix feature
+- resolve dynaconf settings.toml not found in non-editable installs
+- address PR review feedback for client registry and DCR proxy
+- support cloud OAuth clients and graceful DCR fallback
+- address PR review — remove token exchange tests, improve logging
+- address PR review — stale mcp-oauth refs, Playwright TimeoutError catch
+- update expected auth tools list for login-flow scope test
+- convert BDAY datetime.date to string before Pydantic validation
+- require bearer token on provision endpoints (open redirect mitigation)
+- address PR review round 3 — info disclosure, conditional routes, cleanup
+- address PR review round 2 — expiry checks, race guards, poll tests
+- address PR review — XSS escape, asyncio→anyio, URL rewrite dedup
+- use app password auth for background sync in Login Flow mode
+- discover Login Flow v2 users in OAuth mode user manager
+- rewrite Login Flow v2 poll endpoint URL to use configured host
+- handle internal hostname without port in Login Flow v2 URL rewriting
+- allow HTTPS redirect URIs for non-localhost OAuth clients
+- move Astrolabe OAuth hook to before-starting for reliable OIDC client creation
+- resolve OAuth compatibility issues for login-flow deployment
+- pin Renovate Nextcloud updates to matching major version
+- address PR review feedback (round 9)
+- address PR review feedback (round 8)
+- address PR review feedback (round 7) and fix CI
+- address PR review feedback (round 6)
+- address PR review feedback (round 5)
+- add trash/delete collective tools and address review feedback (round 4)
+- address PR review feedback (round 3)
+- address PR review feedback (round 2)
+- correct tool annotations to match ADR-017 conventions
+- address PR review feedback for Collectives support
+- pin starlette<1.0 to prevent startup crash (#648)
+- increase vector sync wait timeout to prevent sampling test timeouts in CI
+- reduce vector sync scan interval to 5s for single-user service
+- expose public status endpoints in all modes and enable vector sync (#637)
+- resolve OIDC consent flow 500 errors on NC 32
+- address PR #632 review comments
+- **ci**: build OIDC app for all test modes including single-user
+- patch OIDC consent flow regression and add CI build step
+- **caldav**: address PR #632 review feedback
+- **caldav**: migrate to upstream caldav v3.0.1 to fix href handling (#629)
+
+### Refactor
+
+- **worker**: trim observability helper docstring; clarify test fake
+- **app**: cancel only the readiness loop at shutdown (review round 3)
+- **metering**: harden page_count guard per review
+- **documents**: fully decouple document stack from server startup; Windows-safe tests
+- **search**: structural per-instance query side-channel; doc search billing gap
+- **usage**: extract indexing metering helper; address review round 2
+- **deck**: address PR #872 round-1 review
+- **usage**: final round-6 nits on PR #871
+- **usage**: close out round-5 nits on PR #871
+- **usage**: address round-4 review on PR #871
+- **usage**: address round-3 review on PR #871
+- **usage**: address round-2 review on PR #871
+- **usage**: address round-1 review on PR #871
+- address PR #851 review round 5 (ingest transport)
+- address PR #851 review round 4 (ingest transport)
+- address PR #851 review round 3 (ingest transport)
+- address PR #851 review round 2 (ingest transport)
+- address PR #851 review round 1 (ingest transport)
+- **deck**: address PR #826 review feedback
+- **contacts**: address PR #719 follow-up review
+- drop OAuth-refresh background-sync path from oauth_sync.py
+- prune dead pre-LOGIN_FLOW config/runtime branches
+- convert f-string logging to lazy %-style format (G004)
+- **config**: drop ENABLE_MULTI_USER_BASIC_AUTH env var, fail loud on legacy aliases
+- **config**: derive enable_login_flow from mode, remove ENABLE_LOGIN_FLOW env var
+- **config**: rename OAUTH_SINGLE_AUDIENCE to LOGIN_FLOW, gate on ENABLE_LOGIN_FLOW
+- **vector**: address PR #775 review round 3 — fix unused var, harden boundary lookup, rename trace span
+- **vector**: address PR #775 review round 2 — drop dead page field, add omission tests
+- **vector**: address PR #775 review — drop unused payload key, fix resource leaks
+- **providers**: address PR #772 review round 3 — hermetic test, lazy logging, defensive-guard tests
+- **providers**: address PR #772 review round 2 — guard, naming, docs, tests
+- **providers**: address PR #772 review — shared retry, cleaner imports, no-op close
+- **config**: consolidate NEXTCLOUD_PUBLIC_ISSUER_URL through Settings
+- **search**: address PR #750 round 12 review feedback
+- **search**: address PR #750 round 11 review feedback
+- **search**: address PR #750 round 10 review feedback
+- **search**: address PR #750 round 9 review feedback
+- **search**: pre-push review fixes for PR #750
+- **search**: address PR #750 round 8 review feedback
+- **search**: address PR #750 round 7 review feedback
+- **search**: address PR #750 round 6 review feedback
+- **search**: address PR #750 round 5 review feedback
+- **search**: address PR #750 round 4 review feedback
+- **search**: address PR #750 round 3 review feedback
+- **search**: address PR #750 round 2 review feedback
+- **search**: address PR #750 review feedback
+- **webhooks**: bound queue waits, route URLs through dynaconf
+- **webhooks**: address PR review on auth-pass
+- change OAuth scope separator from colon to dot for IDP compatibility
+- remove ALLOWED_MCP_CLOUD_CLIENTS and add keycloak CI profile
+- consolidate ALLOWED_MCP_CLIENTS and add redirect URI validation
+- remove RFC 8693 token exchange and Keycloak OAuth implementation
+- remove oauth profile, migrate MCP/OAuth tests to login-flow
+- use redirect-based Login Flow v2 provision instead of popup
+- remove Smithery deployment mode
+
+### Perf
+
+- **search**: skip exclusion lookup on empty tag set; fix semaphore comment
+
+## v0.65.0 (2026-03-03)
+
+### Feat
+
+- **auth**: implement OAuth AS proxy to fix audience mismatch (ADR-023)
+- **ci**: add Nextcloud version matrix (NC 31, 32, 33)
+- **helm**: add login-flow auth mode to Helm chart (ADR-022)
+- add Docker Compose profiles and Login Flow v2 service
+
+### Fix
+
+- replace assert with proper guard and invalidate scope cache after provisioning
+- disable NC rate limiting in dev/CI and add token endpoint diagnostics
+- address review feedback — security, caching, CI 429 retry
+- skip keycloak hook when profile inactive and update stale PRM test
+- address remaining PR #589 review findings
+- address PR #589 review findings
+- address PR review issues for Login Flow v2
+- address PR #589 review feedback (round 2)
+- **ci**: remove dev OIDC mount to fix HTTP 500 in single-user/multi-user-basic
+- **ci**: fix health check timeout and per-profile MCP server URL routing
+- **ci**: fix PHP gating, add multi-user-basic matrix entry, upload debug artifacts
+- address PR #589 review feedback for Login Flow v2
+- **ci**: fix integration test collection and skip Playwright in CI
+- **test**: fix 17 pre-existing unit test failures and add astrolabe CI build
+- **ci**: keep third_party mount, always build submodules in CI
+- **ci**: revert accidental third_party mount, use compose override for OIDC
+- **ci**: don't block integration matrix on unit-test failures
+
+## v0.64.5 (2026-03-03)
+
+### Fix
+
+- handle pythonvCard4 dict-format fields and missing phone numbers (#601)
+
+## v0.64.4 (2026-02-26)
+
+### Fix
+
+- **deps**: update dependency icalendar to v7
+
+## v0.64.3 (2026-02-21)
+
+### Fix
+
+- address PR #574 fourth review round
+- address PR #574 third review round
+- address PR #574 second review round
+- address PR #574 review comments
+- wrap raw list returns in response models to produce single TextContent block
+
+## v0.64.2 (2026-02-20)
+
+### Fix
+
+- address PR #571 review comments
+- resolve stale credentials causing astrolabe background sync test failures
+
+### Refactor
+
+- enforce PLC0415 (import-outside-top-level) for source code
+
+## v0.64.1 (2026-02-18)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.26,<1.27
+
+## v0.64.0 (2026-02-16)
+
+### Feat
+
+- add self-signed SSL certificate support for Nextcloud connections
+
+### Fix
+
+- add type: ignore for caldav ssl_verify_cert parameter
+- convert CA bundle path to ssl.SSLContext to avoid httpx deprecation warning
+
+## v0.63.5 (2026-02-16)
+
+### Refactor
+
+- remove stale astrolabe references from commitizen config
+- extract Astrolabe to separate repository
+
+## v0.63.4 (2026-02-08)
+
+### Fix
+
+- strip whitespace from category names when splitting
+- handle categories, recurrence_rule, attendees, and reminder_minutes in update_event
+
+## v0.63.3 (2026-02-08)
+
+### Fix
+
+- expand recurring events in date-range queries
+
+## v0.63.2 (2026-02-07)
+
+### Fix
+
+- use CalDAV time-range filter for calendar date range queries
+
+## v0.63.1 (2026-02-03)
+
+### Fix
+
+- **helm**: add backward compatibility for legacy persistence configs
+
+## v0.63.0 (2026-01-28)
+
+### Feat
+
+- **astrolabe**: add background token refresh job
+
+### Fix
+
+- **astrolabe**: add pagination and psalm fixes for token refresh
+- **astrolabe**: add locking to prevent token refresh race condition
+- **astrolabe**: add issued_at to on-demand token refresh
+
+## v0.62.0 (2026-01-26)
+
+### Feat
+
+- **scripts**: add database query helpers for development
+
+### Fix
+
+- **astrolabe**: resolve Psalm type errors in PDF preview code
+- **astrolabe**: fix Psalm baseline and ESLint import order
+- **astrolabe**: load pdfjs-dist externally to fix PDF viewer
+- **astrolabe**: improve error messages for authorization issues
+- **astrolabe**: rename OAuthController and fix app password check
+- **tests**: improve Astrolabe integration test reliability
+- **astrolabe**: update Plotly title attributes for v3 compatibility
+- **deps**: update dependency plotly.js-dist-min to v3
+
+### Refactor
+
+- **api**: split management.py into domain-focused modules
+- **astrolabe**: replace client-side PDF.js with server-side PyMuPDF rendering
+
+## v0.61.5 (2026-01-17)
+
+### Fix
+
+- **astrolabe**: improve token refresh error handling and validation
+- **astrolabe**: delete stale tokens when refresh fails
+- **astrolabe**: resolve CI failures for code quality checks
+- **astrolabe**: use internal URL for OAuth token refresh
+
+### Refactor
+
+- **astrolabe**: add PHP property types to fix Psalm errors
+- **astrolabe**: upgrade to @nextcloud/vue 9.3.3 API
+
+## v0.61.4 (2026-01-16)
+
+### Fix
+
+- **astrolabe**: Address reviewer feedback for hybrid mode
+- **astrolabe**: Fix NcSelect options and CSS loading
+- **astrolabe**: fix OAuth flow and settings UI for hybrid mode
+- **api**: return OIDC config in hybrid mode for Astrolabe OAuth flow
+
+## v0.61.3 (2026-01-15)
+
+### Fix
+
+- **astrolabe**: address review feedback for Vue 3 bindings
+- **astrolabe**: update Vue component bindings for Vue 3 compatibility
+
+## v0.61.2 (2026-01-15)
+
+### Fix
+
+- **ci**: bump helm chart version when MCP appVersion changes
+
+## v0.61.1 (2026-01-15)
+
+### Fix
+
+- **astrolabe**: define appName and appVersion for @nextcloud/vue
+
+## v0.61.0 (2026-01-14)
+
+### Feat
+
+- Add rate limiting and extract helpers for app password endpoints
+
+### Fix
+
+- Add missing annotations for deck remove/unassign operations
+- **auth**: Store app passwords locally for multi-user BasicAuth background sync
+
+### Refactor
+
+- Use get_settings() for vector sync enabled check
+- Extract storage helper and improve PHP error handling
+
+## v0.60.4 (2026-01-12)
+
+### Fix
+
+- **deck**: use correct endpoint for reorder_card to fix cross-stack moves
+
+## v0.60.3 (2025-12-31)
+
+### Fix
+
+- **deck**: Always preserve fields in update_card for partial updates
+- **astrolabe**: Fix CSS loading for Nextcloud apps
+- **astrolabe**: Fix revoke access button HTTP method mismatch
+
+## v0.60.2 (2025-12-29)
+
+### Fix
+
+- **oauth**: Enable browser OAuth routes for Management API in hybrid mode
+
+## v0.60.1 (2025-12-26)
+
+### Fix
+
+- **mcp**: Move all imports to the top of modules
+
+## v0.60.0 (2025-12-26)
+
+### Feat
+
+- Remove URL rewriting in favor of proper nextcloud config
+- **helm**: migrate to new environment variable naming convention
+- Migrate to vue 3
+- **astrolabe**: upgrade to Vue 3 and @nextcloud/vue 9
+
+### Fix
+
+- **tests**: Add singleton reset fixture to prevent anyio.WouldBlock errors
+- **tests**: Fix integration test failures in qdrant, sampling, and rag tests
+- **auth**: Skip issuer validation for management API tokens
+- Use settings.enable_offline_access for env var consolidation
+- Add required config.py attributes
+- **docker**: remove overwritehost to fix container-to-container DCR
+- **deps**: update dependency @nextcloud/vue to v9
+- **deps**: update dependency vue to v3
+
+### Refactor
+
+- **auth**: Decouple BasicAuth and OAuth authentication strategies
+
+## v0.59.1 (2025-12-22)
+
+### Fix
+
+- **helm**: set OIDC client env vars when using existingSecret
+- **helm**: trigger chart release workflow on helm chart tags
+
+## v0.59.0 (2025-12-22)
+
+### Feat
+
+- **helm**: add support for multi-user BasicAuth mode
+
+### Fix
+
+- **helm**: address PR #447 reviewer feedback
+- **helm**: include MCP server version bumps in changelog pattern
+
+## v0.58.0 (2025-12-22)
+
+### Feat
+
+- **config**: enable DCR for multi-user BasicAuth with offline access
+- **astrolabe**: implement app password provisioning for multi-user background sync
+- **config**: consolidate configuration with smart dependency resolution (ADR-021)
+
+## v0.57.0 (2025-12-20)
+
+### Feat
+
+- **auth**: add multi-user BasicAuth pass-through mode
+- **astrolabe**: add dynamic MCP server configuration for testing
+
+### Fix
+
+- **config**: address reviewer feedback
+
+### Refactor
+
+- **config**: centralize configuration validation and simplify startup
+
+## v0.56.2 (2025-12-20)
+
+### Fix
+
+- **astrolabe**: screenshots in info.xml
+- **astrolabe**: screenshots in info.xml
+
+## v0.56.1 (2025-12-19)
+
+### Fix
+
+- **astrolabe**: Update screenshots
+- **ci**: skip existing Helm chart releases to prevent duplicate release errors
+
+## v0.56.0 (2025-12-19)
+
+### Feat
+
+- **ci**: add --increment flag to bump scripts for manual version control
+
+### Fix
+
+- **astrolabe**: add contents:write permission to appstore workflow
+- **astrolabe**: update commitizen pattern to properly update info.xml version
+- **astrolabe**: prevent workflow failure when only helm/astrolabe commits exist
+- **astrolabe**: info.xml
+
+## v0.55.1 (2025-12-19)
+
+### Fix
+
+- **ci**: push all tags explicitly in bump workflow
+
+## v0.55.0 (2025-12-19)
+
+### BREAKING CHANGE
+
+- MCP server now bumps for ANY conventional commit except
+those explicitly scoped to helm or astrolabe.
+
+### Feat
+
+- **ci**: implement monorepo-aware version bumping workflow
+
+### Fix
+
+- **ci**: make MCP server default bump target for all non-scoped commits
+- **ci**: restrict docker build to MCP server tags only
+- **ci**: correct appstore-push-action version to v1.0.4
+
+## v0.54.0 (2025-12-19)
+
+### Feat
+
+- **astrolabe**: add Nextcloud App Store deployment automation
+- configure commitizen monorepo with independent versioning
+
+### Fix
+
+- **ci**: improve versioning and error handling
+- **ci**: address critical workflow and validation issues
+- **astrolabe**: address code review feedback
+
+## v0.53.0 (2025-12-19)
+
+### Feat
+
+- add Alembic database migration system
+- make chunk modal title clickable link to documents
+- add native Plotly hover styling for clickable points
+- add click interactivity to Plotly 3D scatter chart
+- improve chunk viewer with fixed navigation and markdown rendering
+- **astrolabe**: enable multi-select for document types and refactor PDF viewer
+- **auth**: implement refresh token rotation for Nextcloud OIDC
+- **astrolabe**: enhance unified search and add webhook management
+- **astrolabe**: add webhook management UI to admin settings
+- **astrolabe**: add OAuth token refresh and webhook presets
+- **search**: add file_path metadata and chunk offsets to search results
+- **astrolabe**: use proper icons and thumbnails in unified search
+- **astrolabe**: add admin search settings and enhanced UI
+- **astrolabe**: add unified search provider with clickable file links
+- **astrolabe**: add 3D PCA visualization for semantic search
+- **astrolabe**: add Nextcloud PHP app for MCP server management
+- **vector-sync**: enable background sync in OAuth mode
+
+### Fix
+
+- **security**: address critical security issues from PR #401 code review
+- **oauth**: enable PKCE for all clients and add token_broker to oauth_context
+- **astrolabe**: revert invalid files_pdfviewer URL for file links
+- resolve type checking warnings for CI
+- move Alembic to package submodule for Docker compatibility
+- update unified search results to match chunk viz display
+- **astrolabe**: handle OAuth refresh token rotation
+- address critical code review issues (4 fixes)
+- resolve CI linting issues for Astroglobe
+
+### Refactor
+
+- **astrolabe**: extract PDF viewer to dedicated component
+- **astrolabe**: reframe UI as semantic search service
+
+## v0.52.1 (2025-12-13)
+
+## v0.52.0 (2025-12-13)
+
+## v0.51.0 (2025-12-13)
+
+### Feat
+
+- **vector**: add Deck card vector search with visualization support
+- **vector-viz**: add news_item support for links and chunk expansion
+
+### Perf
+
+- **deck**: optimize card lookup by storing board_id/stack_id in metadata
+
+## v0.50.2 (2025-12-13)
+
+### Fix
+
+- **news**: revert get_item() to use get_items() + filter
+
+## v0.50.1 (2025-12-12)
+
+### Fix
+
+- Disable DNS rebinding protection for containerized deployments
+- **deps**: update dependency mcp to >=1.23,<1.24
+
+## v0.50.0 (2025-12-11)
+
+### Feat
+
+- add MCP tool annotations for enhanced UX
+
+### Fix
+
+- address PR review feedback
+
+## v0.49.2 (2025-12-09)
+
+### Fix
+
+- Update lockfile
+
+## v0.49.1 (2025-12-09)
+
+### Fix
+
+- Revert mcp version <1.23
+
+## v0.49.0 (2025-12-08)
+
+### Fix
+
+- resolve all type checking errors (8 errors fixed)
+- **deps**: update dependency mcp to >=1.23,<1.24
+
+### Perf
+
+- **news**: use direct API endpoint for get_item()
+
+## v0.48.5 (2025-11-28)
+
+### Feat
+
+- **news**: add Nextcloud News app integration
+
+### Fix
+
+- **deps**: update dependency pillow to v12
+
+### Refactor
+
+- **news**: simplify vector sync to fetch all items
+
+## v0.48.4 (2025-11-23)
+
+### Fix
+
+- Add rate limit retry logic to OpenAI provider
+
+## v0.48.3 (2025-11-23)
+
+### Fix
+
+- Increase MCP sampling timeout to 5 minutes for slower LLMs
+
+## v0.48.2 (2025-11-23)
+
+### Fix
+
+- Share vector sync state with FastMCP session lifespan via module singleton
+
+## v0.48.1 (2025-11-23)
+
+## v0.48.0 (2025-11-23)
+
+## v0.47.0 (2025-11-23)
+
+### Feat
+
+- Add tag management methods to WebDAV client
+- Add OpenAI provider support for embeddings and generation
+
+### Fix
+
+- Share vector sync state with FastMCP session lifespan via module singleton
+- Use WebDAV for tag creation and add LLM-as-a-judge for RAG tests
+
+### Refactor
+
+- Move background tasks to server lifespan and deprecate SSE transport
+
+## v0.46.2 (2025-11-22)
+
+### Fix
+
+- **smithery**: Enable JSON response format for scanner compatibility
+
+## v0.46.1 (2025-11-22)
+
+### Perf
+
+- Optimize vector viz search performance
+
+## v0.46.0 (2025-11-22)
+
+### Feat
+
+- Add Smithery CLI deployment support
+- Implement ADR-016 Smithery stateless deployment mode
+
+### Fix
+
+- **smithery**: Add JSON Schema metadata to mcp-config endpoint
+- **smithery**: Use container runtime pattern for config discovery
+- Add Smithery lifespan and auth mode detection
+
+## v0.45.0 (2025-11-22)
+
+### Feat
+
+- Add context expansion to semantic search with chunk overlap removal
+- Use Ollama native batch API in embed_batch()
+- Implement Qdrant placeholder state management
+- Switch files to use numeric IDs with file_path resolution
+- Implement per-chunk vector visualization with context expansion
+
+### Fix
+
+- Use alpha_composite for proper RGBA highlight blending
+- Remove pymupdf.layout.activate() to fix page_chunks behavior
+- Centralize PDF processing and generate separate images per chunk
+- Set is_placeholder=False in processor to fix search filtering
+- Increase placeholder staleness threshold to 5x scan interval
+- Add placeholder staleness check to prevent duplicate processing
+- Use empty SparseVector instead of None for placeholders
+- Return empty array instead of null for query_coords when no results
+- Align PDF text extraction between indexing and context expansion
+- Update models and viz to use int-only doc_id
+- Reconstruct full content for notes to match indexed offsets
+- Add async/await, PDF metadata, and type safety fixes
+
+### Refactor
+
+- Simplify PDF text extraction with single to_markdown call
+
+### Perf
+
+- Optimize PDF processing with parallel extraction and single-render highlights
+
+## v0.44.1 (2025-11-21)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.22,<1.23
+
+## v0.44.0 (2025-11-19)
+
+### Feat
+
+- Improve vector visualization with static assets and fixes
+- Redesign UI to match Nextcloud ecosystem aesthetic
+
+### Fix
+
+- Improve 3D plot rendering with explicit dimensions and window resize support
+- Preserve 3D plot camera and improve documentation
+- Preserve 3D plot camera position and fix CSS loading
+
+## v0.43.0 (2025-11-18)
+
+### Feat
+
+- Replace custom document chunker with LangChain MarkdownTextSplitter
+
+## v0.42.0 (2025-11-17)
+
+### Feat
+
+- **viz**: Add dual-score display and improve UI controls
+
+## v0.41.0 (2025-11-17)
+
+### Feat
+
+- add configurable fusion algorithms for BM25 hybrid search
+- add chunk position tracking to vector indexing and search
+- add vector viz template and chunk context endpoint
+
+### Fix
+
+- prevent infinite loop in DocumentChunker with position tracking
+- Relax SearchResult validation to support DBSF fusion scores > 1.0
+
+## v0.40.0 (2025-11-16)
+
+### Feat
+
+- add unified provider architecture with Amazon Bedrock support
+
+### Fix
+
+- suppress Starlette middleware type warnings in ty checker
+
+## v0.39.0 (2025-11-16)
+
+## v0.38.0 (2025-11-16)
+
+### Feat
+
+- add concurrent uploads and --force flag to upload command
+- implement RAG evaluation framework with CLI tooling
+- Add OpenTelemetry tracing to @instrument_tool decorator
+- Implement BM25 hybrid search with native Qdrant RRF fusion
+
+### Fix
+
+- download qrels from BEIR ZIP instead of HuggingFace
+- Handle named vectors in visualization and semantic search
+- Update vizApp to use bm25_hybrid algorithm and remove deprecated weights
+- Update viz routes to use BM25 hybrid search after refactor
+
+### Refactor
+
+- migrate asyncio to anyio for consistent structured concurrency
+- replace httpx client with NextcloudClient in upload command
+
+### Perf
+
+- Eliminate double-fetching in semantic search sampling
+- fix vector viz search performance and visual encoding
+- make note deletion concurrent in upload --force
+
+## v0.36.0 (2025-11-15)
+
+### BREAKING CHANGE
+
+- Search algorithms now require Qdrant to be populated.
+Vector sync must be enabled and documents indexed for search to work.
+
+### Feat
+
+- Normalize hybrid search RRF scores to 0-1 range
+- Enhance vector visualization UI and parallelize search verification
+- Add Vector Viz tab to app home page
+- Add vector visualization pane with multi-select document types
+- Implement custom PCA to remove sklearn dependency
+- Add multi-document Protocol with cross-app search support
+- Update nc_semantic_search tool with algorithm selection
+- Implement unified search algorithm module
+
+### Fix
+
+- Reorder tabs and fix viz pane session access
+
+### Refactor
+
+- Optimize Nextcloud access verification with centralized filtering
+- Make all search algorithms query Qdrant payload, not Nextcloud
+
+### Perf
+
+- Exclude vector-sync status polling from distributed tracing
+
+## v0.35.0 (2025-11-15)
+
+### Feat
+
+- Enable SSE transport for mcp service and update test fixtures
+
+## v0.34.2 (2025-11-13)
+
+### Fix
+
+- Use NEXTCLOUD_OIDC_CLIENT_ID/SECRET env vars consistently
+- return all notes when search query is empty
+
+## v0.34.0 (2025-11-13)
+
+### Feat
+
+- Complete Phase 5 - Instrument all 93 MCP tools
+- Add instrumentation decorator and apply to notes tools (Phase 5)
+- Add OAuth token and database metrics (Phases 3-4)
+- Add metrics instrumentation for queue, health, and database operations
+
+## v0.33.1 (2025-11-13)
+
+### Fix
+
+- Move grafana_folder from labels to annotations
+
+## v0.33.0 (2025-11-13)
+
+### Feat
+
+- Add Grafana dashboard and vector sync metric instrumentation
+
+## v0.32.1 (2025-11-12)
+
+### Fix
+
+- add dynamic dimension detection for Ollama embedding models
+
+## v0.32.0 (2025-11-11)
+
+### Feat
+
+- **ollama**: Pull model on startup if not available in ollama
+- add dynamic vector sync status updates with htmx polling
+- add webhook management UI and BeforeNodeDeletedEvent support
+- validate Nextcloud webhook schemas and document findings
+
+### Fix
+
+- improve webapp tab UI with CSS Grid and viewport-filling container
+
+### Refactor
+
+- move webapp from /user/page to /app
+- consolidate database storage for webhooks and OAuth tokens
+
+## v0.31.1 (2025-11-10)
+
+### Refactor
+
+- simplify OpenTelemetry tracing configuration
+
+## v0.31.0 (2025-11-10)
+
+### Feat
+
+- skip tracing for health and metrics endpoints
+
+### Fix
+
+- add retry logic for ETag conflicts in category change test
+- optimize Notes API pagination with pruneBefore parameter
+
+## v0.30.0 (2025-11-10)
+
+### Feat
+
+- **helm**: Add document chunking configuration
+- **vector**: Add configurable chunk size and overlap for document embedding
+- **vector**: Support multiple embedding models with auto-generated collection names
+
+### Fix
+
+- Support in-memory Qdrant for CI testing
+
+## v0.29.2 (2025-11-09)
+
+### Fix
+
+- **helm**: Set default strategy to Recreate
+
+## v0.29.1 (2025-11-09)
+
+### Fix
+
+- **observability**: isolate metrics endpoint to dedicated port
+
+## v0.29.0 (2025-11-09)
+
+### Feat
+
+- **helm**: Add observability support with ServiceMonitor and Grafana dashboard
+
+### Fix
+
+- **readiness**: Only check external Qdrant in network mode
+
+## v0.28.0 (2025-11-09)
+
+### Feat
+
+- **observability**: Add comprehensive monitoring with Prometheus and OpenTelemetry
+
+### Fix
+
+- **vector**: Handle missing 'modified' field in notes gracefully
+
+## v0.27.3 (2025-11-09)
+
+### Fix
+
+- **ci**: Use helm dependency build instead of update to use Chart.lock
+
+## v0.27.2 (2025-11-09)
+
+### Fix
+
+- **helm**: update Qdrant dependency condition to match new mode structure
+
+## v0.27.1 (2025-11-09)
+
+### Fix
+
+- **ci**: add Helm repository setup to chart release workflow
+
+## v0.27.0 (2025-11-09)
+
+### Feat
+
+- **helm**: add Qdrant local mode support with three deployment options [skip ci]
+- add Qdrant local mode support with in-memory and persistent storage
+- implement ADR-009 - refactor semantic search to use generic semantic:read scope
+- implement MCP sampling for semantic search RAG (ADR-008)
+- add optional vector database and semantic search to helm chart
+- add vector sync processing status to /user/page endpoint
+- implement semantic search tool and fix vector sync issues (ADR-007 Phase 3)
+- implement vector sync scanner and processor (ADR-007 Phase 2)
+
+### Fix
+
+- implement deletion grace period and vector sync status tool
+- remove unnecessary urllib3<2.0 constraint
+- integrate vector sync tasks with Starlette lifespan for streamable-http
+
+### Refactor
+
+- migrate vector sync from asyncio.Queue to anyio memory object streams
+- update to Qdrant query_points API and fix Playwright Keycloak login
+
+## v0.26.1 (2025-11-08)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.21,<1.22
+
+## v0.26.0 (2025-11-08)
+
+### Feat
+
+- add real elicitation integration test with python-sdk MCP client
+- unify session architecture and enhance login status visibility
+
+### Fix
+
+- Consolidate OAuth callbacks and implement PKCE for all flows
+
+## v0.25.0 (2025-11-05)
+
+### BREAKING CHANGE
+
+- All OAuth deployments must be reconfigured to specify
+resource URIs (NEXTCLOUD_MCP_SERVER_URL and NEXTCLOUD_RESOURCE_URI) and
+choose between multi-audience or token exchange mode.
+
+### Feat
+
+- Implement ADR-005 unified token verifier to eliminate token passthrough vulnerability
+
+### Fix
+
+- Implement proper OAuth resource parameters and PRM-based discovery
+- Simplify token verifier to be RFC 7519 compliant
+- Use Keycloak client ID for NEXTCLOUD_RESOURCE_URI in token exchange
+- Correct OAuth token audience validation for multi-audience mode
+
+### Refactor
+
+- Eliminate duplicate validation logic in UnifiedTokenVerifier
+
+## v0.24.1 (2025-11-04)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.20,<1.21
+
+## v0.24.0 (2025-11-04)
+
+### Feat
+
+- add scope protection to OAuth provisioning tools
+- enable authorization services for token exchange in Keycloak
+- implement scope-based audience mapping and RFC 9728 support
+- integrate token exchange into MCP server application
+- implement RFC 8693 Standard Token Exchange for Keycloak
+- Add userinfo route/page
+- add browser-based user info page with separate OAuth flow
+- Implement ADR-004 Progressive Consent foundation (partial)
+- Complete ADR-004 Progressive Consent OAuth flows implementation
+- Implement ADR-004 Progressive Consent foundation components
+- Implement ADR-004 Hybrid Flow with comprehensive integration tests
+
+### Fix
+
+- add missing await for get_nextcloud_client in capabilities resource
+- use valid Fernet encryption keys in token exchange tests
+- accept resource URL in token audience for Nextcloud JWT tokens
+- remove token-exchange-nextcloud scope and accept tokens without audience
+- move audience mapper from scope to nextcloud-mcp-server client
+- move token-exchange-nextcloud from default to optional scopes
+- restructure routes to prevent SessionAuthBackend from interfering with FastMCP OAuth
+- allow OAuth Bearer tokens on /mcp endpoint by excluding from session auth
+- correct OAuth token audience validation using RFC 8707 resource parameter
+- remove remaining references to deleted oauth_callback and oauth_token
+- remove Hybrid Flow, make Progressive Consent default (ADR-004)
+- browser OAuth userinfo endpoint and refresh token rotation
+- make ENABLE_PROGRESSIVE_CONSENT consistently opt-in (default false)
+- make provisioning checks opt-in (default false)
+- Disable Progressive Consent for mcp-oauth to enable Hybrid Flow tests
+
+### Refactor
+
+- integrate token exchange into unified get_client() pattern
+
+## v0.23.0 (2025-11-03)
+
+### Feat
+
+- Auto-configure impersonation role in Keycloak realm import
+- Implement dual-tier token exchange (Standard V2 + Legacy V1 impersonation)
+- Add Keycloak external IdP integration with custom scopes
+- Implement RFC 8693 token exchange for Keycloak (ADR-002 Tier 2)
+- Add Keycloak OAuth provider support with refresh token storage
+
+### Fix
+
+- Complete Keycloak external IdP integration with all tests passing
+- Complete Keycloak external IdP integration with all tests passing
+- Update DCR token_type tests for OIDC app changes
+
+### Refactor
+
+- Remove NEXTCLOUD_OIDC_CLIENT_STORAGE environment variable
+- Remove unnecessary user_oidc patch - CORSMiddleware patch is sufficient
+- Unify OAuth configuration to be provider-agnostic
+
+## v0.22.7 (2025-10-29)
+
+### Fix
+
+- **helm**: Remove image tag overide
+
+## v0.22.6 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm chart with extraArgs
+
+## v0.22.5 (2025-10-29)
+
+### Fix
+
+- Update helm chart variables
+
+## v0.22.4 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm version with release
+- **helm**: Update helm version with release
+
+## v0.22.3 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm version with release
+
+## v0.22.2 (2025-10-29)
+
+### Fix
+
+- **helm**: Update helm version with release
+
+## v0.22.1 (2025-10-29)
+
+### Fix
+
+- Trigger release
+
+## v0.22.0 (2025-10-29)
+
+### Feat
+
+- **server**: Add /live & /health endpoints
+- Initialize helm chart
+
+## v0.21.0 (2025-10-25)
+
+### Feat
+
+- Add text processing background worker for telling client about progress
+
+### Refactor
+
+- Transform document parsing into pluggable processor architecture
+
+## v0.20.0 (2025-10-24)
+
+### Feat
+
+- **auth**: Add support for client registration deletion
+- Split read/write scopes into app:read/write scopes
+
+### Fix
+
+- Add support for RFC 7592 client registration and deletion
+- Update webdav models for proper serialization
+
+## v0.19.1 (2025-10-24)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.19,<1.20
+
+## v0.19.0 (2025-10-23)
+
+### Feat
+
+- Enable token introspection for opaque tokens
+
+### Fix
+
+- Add CORS middleware to allow browser-based clients like MCP Inspector
+
+## v0.18.0 (2025-10-23)
+
+### Feat
+
+- **server**: Add support for custom OIDC scopes and permissions via JWTs
+- Initialize JWT-scoped tools
+
+### Fix
+
+- Use occ-created OAuth clients with allowed_scopes for all tests
+- Separate OAuth fixtures for opaque vs JWT tokens
+
+### Refactor
+
+- Update JWT client to use DCR, re-enable tool filtering
+
+## v0.17.1 (2025-10-20)
+
+### Fix
+
+- **caldav**: Fix caldav search() due to missing todos
+
+## v0.17.0 (2025-10-19)
+
+### Feat
+
+- **caldav**: Add support for tasks
+
+### Fix
+
+- **caldav**: Check that calendar exists after creation to avoid race condition
+- **caldav**: Properly parse datetimes as vDDDTypes
+
+### Refactor
+
+- Migrate from internal CalendarClient to caldav library
+
+## v0.16.0 (2025-10-19)
+
+### Feat
+
+- **webdav**: Add search and list favorite response tools
+
+### Perf
+
+- **notes**: Improve notes search performance using async iterators
+
+## v0.15.2 (2025-10-17)
+
+### Refactor
+
+- Unify logging & remove factory deployment
+
+## v0.15.1 (2025-10-17)
+
+### Fix
+
+- Increase HTTP client timeout to 30s
+- Handle RequestError in mcp tools
+
+## v0.15.0 (2025-10-17)
+
+### Feat
+
+- **cookbook**: Add full Cookbook app support with 13 tools and 2 resources
+
+## v0.14.3 (2025-10-17)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.18,<1.19
+
+## v0.14.2 (2025-10-16)
+
+### Fix
+
+- **deps**: update dependency pillow to v12
+
+## v0.14.1 (2025-10-15)
+
+### Fix
+
+- **oauth**: Remove the option to force_register new clients
+
+## v0.14.0 (2025-10-15)
+
+### Feat
+
+- Add Groups API client
+- add sharing API client and server tools
+
+### Fix
+
+- Update user/groups API to OCS v2
+
+## v0.13.0 (2025-10-13)
+
+### Feat
+
+- **server**: Experimental support for OAuth2/OIDC authentication
+
+## v0.12.6 (2025-10-11)
+
+### Feat
+
+- **users**: Initialize user API client
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.17,<1.18
+
+## v0.12.5 (2025-10-03)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.16,<1.17
+
+## v0.12.4 (2025-09-25)
+
+### Fix
+
+- **deps**: update dependency mcp to >=1.15,<1.16
+
+## v0.12.3 (2025-09-23)
+
+### Refactor
+
+- Add tools for all resources to enable tool-only workflows
+
+## v0.12.2 (2025-09-20)
+
+### Refactor
+
+- Add `http` to --transport option
+
+## v0.12.1 (2025-09-11)
+
+### Fix
+
+- **docker**: Provide --host 0.0.0.0 in default docker image
+
+## v0.12.0 (2025-09-11)
+
+### Feat
+
+- **server**: Add support for `streamable-http` transport type
+
 ## v0.113.1 (2026-06-11)
 
 ### Fix
